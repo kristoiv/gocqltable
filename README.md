@@ -1,7 +1,5 @@
 #GoCqlTable
 
-#### [Documentation](https://godoc.org/github.com/elvtechnology/gocqltable)
-
 GoCqlTable is a wrapper around the GoCql-driver that seeks to simplify working with the Cassandra database in Golang projects.
 
 The project consists of two packages you need to know about:
@@ -10,6 +8,8 @@ The project consists of two packages you need to know about:
 1. recipes – Contains code that extends the table implementation by adding more functionality. The recipes. CRUD type implements a simple object relational mapper (ORM) that makes it simple to Insert/Update/Get/Delete, and for compound clustering theres even List/Range methods that allow you to filter your results on range columns.
 
 _Note: The project is very much in development, and may not be stable enough for production use. The API may change without notice._
+
+#### [Documentation](https://godoc.org/github.com/elvtechnology/gocqltable)
 
 ## Examples of use
 
