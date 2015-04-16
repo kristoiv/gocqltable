@@ -3,6 +3,7 @@
 GoCqlTable is a wrapper around the GoCql-driver that seeks to simplify working with the Cassandra database in Golang projects.
 
 The project consists of two packages you need to know about:
+
 1. gocqltable (the base) – Contains wrapper objects for working with Keyspaces and Tables. Simplifies creating, dropping and querying. Returns rowset's as ```[]interface{}```, that should be type asserted to the row model struct.
 1. recipes – Contains code that extends the table implementation by adding more functionality. The recipes.CRUD type implements a simple object relational mapper (ORM) that makes it simple to Insert/Update/Get/Delete, and for compound clustering theres even List/Range methods that allow you to filter your results on range columns.
 
