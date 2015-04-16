@@ -1,4 +1,6 @@
-#GoCqlTable - [Documentation](https://godoc.org/github.com/elvtechnology/gocqltable)
+#GoCqlTable
+
+#### [Documentation](https://godoc.org/github.com/elvtechnology/gocqltable)
 
 GoCqlTable is a wrapper around the GoCql-driver that seeks to simplify working with the Cassandra database in Golang projects.
 
