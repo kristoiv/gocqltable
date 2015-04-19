@@ -9,6 +9,8 @@ The project consists of two packages you need to know about:
 
 _Note: The project is very much in development, and may not be stable enough for production use. The API may change without notice._
 
+#### [Documentation](https://godoc.org/github.com/elvtechnology/gocqltable)
+
 ## Examples of use
 
 For extensive examples see the examples folder. The base-example shows you the base API. The CRUD example takes you through most of the ORM functionality.
