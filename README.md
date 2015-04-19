@@ -92,7 +92,7 @@ if err != nil {
 // With our database filled up with users, lets query it and print out the results (containing all users in the database).
 rowset, err := userTable.List()
 for _, row := range rowset {
-    user := row.(*User) // Our row variable is a pointer to "interface{}", and here we type assert it to a pointer to "User"
+    user := row.(*User) // Our row variable is a "interface{}", and here we type assert it to a pointer to "User"
 }
 if err != nil {
     log.Fatalln(err)

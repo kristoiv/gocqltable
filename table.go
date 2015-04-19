@@ -12,7 +12,6 @@ import (
 type TableInterface interface {
 	Create() error
 	Drop() error
-	Schema() (string, error)
 	Query(statement string, params ...interface{}) Query
 	Name() string
 	Keyspace() Keyspace
@@ -40,6 +39,10 @@ func (t Table) CreateWithProperties(props ...string) error {
 }
 
 func (t Table) create(props ...string) error {
+
+	if t.session == nil {
+		t.session = defaultSession
+	}
 
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
@@ -79,14 +82,16 @@ func (t Table) create(props ...string) error {
 }
 
 func (t Table) Drop() error {
+	if t.session == nil {
+		t.session = defaultSession
+	}
 	return t.session.Query(fmt.Sprintf(`DROP TABLE %q.%q`, t.Keyspace().Name(), t.Name())).Exec()
 }
 
-func (t Table) Schema() (string, error) {
-	return "", nil
-}
-
 func (t Table) Query(statement string, values ...interface{}) Query {
+	if t.session == nil {
+		t.session = defaultSession
+	}
 	return Query{
 		Statement: statement,
 		Values:    values,

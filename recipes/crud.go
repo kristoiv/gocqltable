@@ -30,10 +30,11 @@ func (t CRUD) insert(row interface{}, ttl *time.Time) error {
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
-	where := []string{}
-	for _, key := range append(rowKeys, rangeKeys...) {
-		where = append(where, key+" = ?")
-	}
+	// TODO: Test and remove
+	// where := []string{}
+	// for _, key := range append(rowKeys, rangeKeys...) {
+	// 	where = append(where, key+" = ?")
+	// }
 
 	m, ok := r.StructToMap(row)
 	if !ok {

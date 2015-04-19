@@ -35,6 +35,10 @@ func NewKeyspace(name string) Keyspace {
 
 func (ks Keyspace) Create(replication map[string]interface{}, durableWrites bool) error {
 
+	if ks.session == nil {
+		ks.session = defaultSession
+	}
+
 	replicationBytes, err := json.Marshal(replication)
 	if err != nil {
 		return err
@@ -52,14 +56,16 @@ func (ks Keyspace) Create(replication map[string]interface{}, durableWrites bool
 }
 
 func (ks Keyspace) Drop() error {
+	if ks.session == nil {
+		ks.session = defaultSession
+	}
 	return ks.session.Query(fmt.Sprintf(`DROP KEYSPACE %q`, ks.Name())).Exec()
 }
 
-func (ks Keyspace) Schema() (string, error) {
-	return "", nil
-}
-
 func (ks Keyspace) Tables() ([]string, error) {
+	if ks.session == nil {
+		ks.session = defaultSession
+	}
 	var name string
 	var resultSet []string
 	iterator := ks.session.Query(`SELECT columnfamily_name FROM system.schema_columnfamilies WHERE keyspace_name = ?;`, ks.Name()).Iter()
@@ -73,6 +79,9 @@ func (ks Keyspace) Tables() ([]string, error) {
 }
 
 func (ks Keyspace) NewTable(name string, rowKeys, rangeKeys []string, row interface{}) Table {
+	if ks.session == nil {
+		ks.session = defaultSession
+	}
 	return Table{
 		name:      name,
 		rowKeys:   rowKeys,
@@ -89,5 +98,8 @@ func (ks Keyspace) Name() string {
 }
 
 func (ks Keyspace) Session() *gocql.Session {
+	if ks.session == nil {
+		ks.session = defaultSession
+	}
 	return ks.session
 }
