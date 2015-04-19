@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"reflect"
 	"time"
 
 	"github.com/elvtechnology/gocqltable"
@@ -101,7 +102,7 @@ func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
 
 }
 
-func (t CRUD) List(ids ...interface{}) ([]interface{}, error) {
+func (t CRUD) List(ids ...interface{}) (interface{}, error) {
 	return t.Range(ids...).Fetch()
 }
 
@@ -263,7 +264,7 @@ func (r Range) Limit(l int) Range {
 	return r
 }
 
-func (r Range) Fetch() ([]interface{}, error) {
+func (r Range) Fetch() (interface{}, error) {
 
 	where := r.where
 	whereVals := r.whereVals
@@ -292,15 +293,16 @@ func (r Range) Fetch() ([]interface{}, error) {
 	}
 
 	iter := r.table.Query(fmt.Sprintf(`SELECT * FROM %q.%q %s %s %s %s`, r.table.Keyspace().Name(), r.table.Name(), whereString, orderString, limitString, filteringString), whereVals...).Fetch()
-	result := []interface{}{}
+
+	result := reflect.Zero(reflect.SliceOf(reflect.PtrTo(reflect.TypeOf(r.table.Row())))) // Create a zero-value slice of pointers to our model type
 	for row := range iter.Range() {
-		result = append(result, row)
+		result = reflect.Append(result, reflect.ValueOf(row)) // Append the rows to our slice
 	}
 
 	if err := iter.Close(); err != nil {
 		return nil, err
 	}
 
-	return result, nil
+	return result.Interface(), nil
 
 }

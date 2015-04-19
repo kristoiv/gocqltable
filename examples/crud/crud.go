@@ -115,8 +115,8 @@ func main() {
 	rowset, err := userTable.List()
 	fmt.Println("")
 	fmt.Println("Fetched all from users:")
-	for _, row := range rowset {
-		user := row.(*User)         // Our row variable is a pointer to "interface{}", and here we type assert it to a pointer to "User"
+	for _, user := range rowset.([]*User) {
+		// user := row.(*User)         // Our row variable is a pointer to "interface{}", and here we type assert it to a pointer to "User"
 		fmt.Println("User: ", user) // Let's just print that
 	}
 	if err != nil {
@@ -152,8 +152,8 @@ func main() {
 	rowset, err = userTable.List()
 	fmt.Println("")
 	fmt.Println("Final list of users:")
-	for _, row := range rowset {
-		user := row.(*User)         // Our row variable is a pointer to "interface{}", and here we type assert it to a pointer to "User"
+	for _, user := range rowset.([]*User) {
+		// user := row.(*User)         // Our row variable is a pointer to "interface{}", and here we type assert it to a pointer to "User"
 		fmt.Println("User: ", user) // Let's just print that
 	}
 	if err != nil {
@@ -244,8 +244,8 @@ func main() {
 	}
 	fmt.Println("")
 	fmt.Println("Fetching all user logs:")
-	for _, row := range rowset {
-		userLog := row.(*UserLog)
+	for _, userLog := range rowset.([]*UserLog) {
+		//userLog := row.(*UserLog)
 		fmt.Println("UserLog: ", userLog)
 	}
 
@@ -255,8 +255,8 @@ func main() {
 	}
 	fmt.Println("")
 	fmt.Println("Fetching all user logs by user 2@example.com:")
-	for _, row := range rowset {
-		userLog := row.(*UserLog)
+	for _, userLog := range rowset.([]*UserLog) {
+		// userLog := row.(*UserLog)
 		fmt.Println("UserLog: ", userLog)
 	}
 
@@ -266,8 +266,8 @@ func main() {
 	}
 	fmt.Println("")
 	fmt.Println("Fetching all user logs by user 2@example.com, where id >= log3.Id:")
-	for _, row := range rowset {
-		userLog := row.(*UserLog)
+	for _, userLog := range rowset.([]*UserLog) {
+		//userLog := row.(*UserLog)
 		fmt.Println("UserLog: ", userLog)
 	}
 
@@ -277,8 +277,8 @@ func main() {
 	}
 	fmt.Println("")
 	fmt.Println("Fetching all user logs by user 2@example.com, where id > log3.Id:")
-	for _, row := range rowset {
-		userLog := row.(*UserLog)
+	for _, userLog := range rowset.([]*UserLog) {
+		//userLog := row.(*UserLog)
 		fmt.Println("UserLog: ", userLog)
 	}
 
@@ -288,8 +288,8 @@ func main() {
 	}
 	fmt.Println("")
 	fmt.Println("Fetching all user logs by user 2@example.com, where id < log3.Id:")
-	for _, row := range rowset {
-		userLog := row.(*UserLog)
+	for _, userLog := range rowset.([]*UserLog) {
+		// userLog := row.(*UserLog)
 		fmt.Println("UserLog: ", userLog)
 	}
 

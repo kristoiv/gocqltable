@@ -92,9 +92,9 @@ if err != nil {
 
 
 // With our database filled up with users, lets query it and print out the results (containing all users in the database).
-rowset, err := userTable.List()
-for _, row := range rowset {
-    user := row.(*User) // Our row variable is a "interface{}", and here we type assert it to a pointer to "User"
+rowset, err := userTable.List() // Our rowset variable is a "interface{}", and here we type assert it to a slice of pointers to "User"
+for _, user := range rowset.([]*User) {
+    fmt.Println(user)
 }
 if err != nil {
     log.Fatalln(err)
