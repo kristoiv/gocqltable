@@ -124,18 +124,26 @@ func (t CRUD) Update(row interface{}) error {
 	ids := []interface{}{}
 	set := []string{}
 	vals := []interface{}{}
+
+	for _, rowKey := range append(rowKeys, rangeKeys...) {
+		for key, value := range m {
+			if strings.ToLower(key) == strings.ToLower(rowKey) {
+				ids = append(ids, value)
+				break
+			}
+		}
+	}
+
 	for key, value := range m {
 		isAKey := false
 		for _, rowKey := range append(rowKeys, rangeKeys...) {
 			if strings.ToLower(key) == strings.ToLower(rowKey) {
-				ids = append(ids, value)
 				isAKey = true
 				break
 			}
 		}
-
 		if !isAKey {
-			set = append(set, key+" = ?")
+			set = append(set, strings.ToLower(key)+" = ?")
 			vals = append(vals, value)
 		}
 	}
@@ -168,8 +176,8 @@ func (t CRUD) Delete(row interface{}) error {
 	}
 
 	ids := []interface{}{}
-	for key, value := range m {
-		for _, rowKey := range append(rowKeys, rangeKeys...) {
+	for _, rowKey := range append(rowKeys, rangeKeys...) {
+		for key, value := range m {
 			if strings.ToLower(key) == strings.ToLower(rowKey) {
 				ids = append(ids, value)
 				break
