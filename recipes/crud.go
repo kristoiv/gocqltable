@@ -148,10 +148,13 @@ func (t CRUD) Update(row interface{}) error {
 		}
 	}
 
-	if len(ids) < len(rowKeys) {
-		return errors.New(fmt.Sprintf("To few key-values to query for row (%d of the required minimum of %d)", len(ids), len(rowKeys)))
+	if len(ids) < len(rowKeys)+len(rangeKeys) {
+		return errors.New(fmt.Sprintf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys)))
 	}
 
+	fmt.Println(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")))
+	fmt.Println(vals)
+	fmt.Println(ids)
 	err := t.Query(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")), append(vals, ids...)...).Exec()
 	if err != nil {
 		return err
