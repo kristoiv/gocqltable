@@ -90,7 +90,7 @@ func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
 
 	where := []string{}
 	for _, key := range append(rowKeys, rangeKeys...) {
-		where = append(where, key+" = ?")
+		where = append(where, strings.ToLower(fmt.Sprintf("%q", key))+" = ?")
 	}
 
 	row, err := t.Query(fmt.Sprintf(`SELECT * FROM %q.%q WHERE %s LIMIT 1`, t.Keyspace().Name(), t.Name(), strings.Join(where, " AND ")), ids...).FetchRow()
@@ -113,7 +113,7 @@ func (t CRUD) Update(row interface{}) error {
 
 	where := []string{}
 	for _, key := range append(rowKeys, rangeKeys...) {
-		where = append(where, key+" = ?")
+		where = append(where, strings.ToLower(fmt.Sprintf("%q", key))+" = ?")
 	}
 
 	m, ok := r.StructToMap(row)
@@ -143,7 +143,7 @@ func (t CRUD) Update(row interface{}) error {
 			}
 		}
 		if !isAKey {
-			set = append(set, strings.ToLower(key)+" = ?")
+			set = append(set, strings.ToLower(fmt.Sprintf("%q", key))+" = ?")
 			vals = append(vals, value)
 		}
 	}
@@ -152,9 +152,6 @@ func (t CRUD) Update(row interface{}) error {
 		return errors.New(fmt.Sprintf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys)))
 	}
 
-	fmt.Println(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")))
-	fmt.Println(vals)
-	fmt.Println(ids)
 	err := t.Query(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")), append(vals, ids...)...).Exec()
 	if err != nil {
 		return err
@@ -170,7 +167,7 @@ func (t CRUD) Delete(row interface{}) error {
 
 	where := []string{}
 	for _, key := range append(rowKeys, rangeKeys...) {
-		where = append(where, key+" = ?")
+		where = append(where, strings.ToLower(fmt.Sprintf("%q", key))+" = ?")
 	}
 
 	m, ok := r.StructToMap(row)
