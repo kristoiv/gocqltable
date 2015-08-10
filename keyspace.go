@@ -89,7 +89,7 @@ func (ks Keyspace) NewTable(name string, rowKeys, rangeKeys []string, row interf
 		row:       row,
 
 		keyspace: ks,
-		session:  defaultSession,
+		session:  ks.session,
 	}
 }
 
