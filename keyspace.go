@@ -103,3 +103,7 @@ func (ks Keyspace) Session() *gocql.Session {
 	}
 	return ks.session
 }
+
+func (ks *Keyspace) SetSession(session *gocql.Session) {
+	ks.session = session
+}
