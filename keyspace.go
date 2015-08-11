@@ -89,7 +89,7 @@ func (ks Keyspace) NewTable(name string, rowKeys, rangeKeys []string, row interf
 		row:       row,
 
 		keyspace: ks,
-		session:  defaultSession,
+		session:  ks.session,
 	}
 }
 
@@ -102,4 +102,8 @@ func (ks Keyspace) Session() *gocql.Session {
 		ks.session = defaultSession
 	}
 	return ks.session
+}
+
+func (ks *Keyspace) SetSession(session *gocql.Session) {
+	ks.session = session
 }
