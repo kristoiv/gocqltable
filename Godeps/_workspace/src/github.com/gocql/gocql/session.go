@@ -35,6 +35,7 @@ type Session struct {
 	routingKeyInfoCache routingKeyInfoLRU
 	schemaDescriber     *schemaDescriber
 	trace               Tracer
+	hostSource          *ringDescriber
 	mu                  sync.RWMutex
 
 	cfg ClusterConfig
@@ -44,13 +45,62 @@ type Session struct {
 }
 
 // NewSession wraps an existing Node.
-func NewSession(p ConnectionPool, c ClusterConfig) *Session {
-	session := &Session{Pool: p, cons: c.Consistency, prefetch: 0.25, cfg: c}
+func NewSession(cfg ClusterConfig) (*Session, error) {
+	//Check that hosts in the ClusterConfig is not empty
+	if len(cfg.Hosts) < 1 {
+		return nil, ErrNoHosts
+	}
 
-	// create the query info cache
-	session.routingKeyInfoCache.lru = lru.New(c.MaxRoutingKeyInfo)
+	maxStreams := 128
+	if cfg.ProtoVersion > protoVersion2 {
+		maxStreams = 32768
+	}
 
-	return session
+	if cfg.NumStreams <= 0 || cfg.NumStreams > maxStreams {
+		cfg.NumStreams = maxStreams
+	}
+
+	pool, err := cfg.ConnPoolType(&cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	//Adjust the size of the prepared statements cache to match the latest configuration
+	stmtsLRU.Lock()
+	initStmtsLRU(cfg.MaxPreparedStmts)
+	stmtsLRU.Unlock()
+
+	s := &Session{
+		Pool:     pool,
+		cons:     cfg.Consistency,
+		prefetch: 0.25,
+		cfg:      cfg,
+	}
+
+	//See if there are any connections in the pool
+	if pool.Size() > 0 {
+		s.routingKeyInfoCache.lru = lru.New(cfg.MaxRoutingKeyInfo)
+
+		s.SetConsistency(cfg.Consistency)
+		s.SetPageSize(cfg.PageSize)
+
+		if cfg.DiscoverHosts {
+			s.hostSource = &ringDescriber{
+				session:    s,
+				dcFilter:   cfg.Discovery.DcFilter,
+				rackFilter: cfg.Discovery.RackFilter,
+				closeChan:  make(chan bool),
+			}
+
+			go s.hostSource.run(cfg.Discovery.Sleep)
+		}
+
+		return s, nil
+	}
+
+	s.Close()
+
+	return nil, ErrNoConnectionsStarted
 }
 
 // SetConsistency sets the default consistency level for this session. This
@@ -96,7 +146,9 @@ func (s *Session) Query(stmt string, values ...interface{}) *Query {
 	s.mu.RLock()
 	qry := &Query{stmt: stmt, values: values, cons: s.cons,
 		session: s, pageSize: s.pageSize, trace: s.trace,
-		prefetch: s.prefetch, rt: s.cfg.RetryPolicy}
+		prefetch: s.prefetch, rt: s.cfg.RetryPolicy, serialCons: s.cfg.SerialConsistency,
+		defaultTimestamp: s.cfg.DefaultTimestamp,
+	}
 	s.mu.RUnlock()
 	return qry
 }
@@ -134,6 +186,10 @@ func (s *Session) Close() {
 	s.isClosed = true
 
 	s.Pool.Close()
+
+	if s.hostSource != nil {
+		close(s.hostSource.closeChan)
+	}
 }
 
 func (s *Session) Closed() bool {
@@ -221,7 +277,9 @@ func (s *Session) routingKeyInfo(stmt string) (*routingKeyInfo, error) {
 			return nil, inflight.err
 		}
 
-		return inflight.value.(*routingKeyInfo), nil
+		key, _ := inflight.value.(*routingKeyInfo)
+
+		return key, nil
 	}
 
 	// create a new inflight entry while the data is created
@@ -359,19 +417,26 @@ func (s *Session) ExecuteBatch(batch *Batch) error {
 
 // Query represents a CQL statement that can be executed.
 type Query struct {
-	stmt         string
-	values       []interface{}
-	cons         Consistency
-	pageSize     int
-	routingKey   []byte
-	pageState    []byte
-	prefetch     float64
-	trace        Tracer
-	session      *Session
-	rt           RetryPolicy
-	binding      func(q *QueryInfo) ([]interface{}, error)
-	attempts     int
-	totalLatency int64
+	stmt             string
+	values           []interface{}
+	cons             Consistency
+	pageSize         int
+	routingKey       []byte
+	pageState        []byte
+	prefetch         float64
+	trace            Tracer
+	session          *Session
+	rt               RetryPolicy
+	binding          func(q *QueryInfo) ([]interface{}, error)
+	attempts         int
+	totalLatency     int64
+	serialCons       SerialConsistency
+	defaultTimestamp bool
+}
+
+// String implements the stringer interface.
+func (q Query) String() string {
+	return fmt.Sprintf("[query statement=%q values=%+v consistency=%s]", q.stmt, q.values, q.cons)
 }
 
 //Attempts returns the number of times the query was executed.
@@ -414,6 +479,17 @@ func (q *Query) Trace(trace Tracer) *Query {
 // available in Cassandra 2 and onwards.
 func (q *Query) PageSize(n int) *Query {
 	q.pageSize = n
+	return q
+}
+
+// DefaultTimestamp will enable the with default timestamp flag on the query.
+// If enable, this will replace the server side assigned
+// timestamp as default timestamp. Note that a timestamp in the query itself
+// will still override this timestamp. This is entirely optional.
+//
+// Only available on protocol >= 3
+func (q *Query) DefaultTimestamp(enable bool) *Query {
+	q.defaultTimestamp = enable
 	return q
 }
 
@@ -514,6 +590,16 @@ func (q *Query) RetryPolicy(r RetryPolicy) *Query {
 // to an existing query instance.
 func (q *Query) Bind(v ...interface{}) *Query {
 	q.values = v
+	return q
+}
+
+// SerialConsistency sets the consistencyc level for the
+// serial phase of conditional updates. That consitency can only be
+// either SERIAL or LOCAL_SERIAL and if not present, it defaults to
+// SERIAL. This option will be ignored for anything else that a
+// conditional update/insert.
+func (q *Query) SerialConsistency(cons SerialConsistency) *Query {
+	q.serialCons = cons
 	return q
 }
 
@@ -649,8 +735,8 @@ func (iter *Iter) Scan(dest ...interface{}) bool {
 			continue
 		}
 
-		// how can we allow users to pass in a single struct to unmarshal into
-		if col.TypeInfo.Type() == TypeTuple {
+		switch col.TypeInfo.Type() {
+		case TypeTuple:
 			// this will panic, actually a bug, please report
 			tuple := col.TypeInfo.(TupleTypeInfo)
 
@@ -658,18 +744,15 @@ func (iter *Iter) Scan(dest ...interface{}) bool {
 			// here we pass in a slice of the struct which has the number number of
 			// values as elements in the tuple
 			iter.err = Unmarshal(col.TypeInfo, iter.rows[iter.pos][c], dest[i:i+count])
-			if iter.err != nil {
-				return false
-			}
 			i += count
-			continue
+		default:
+			iter.err = Unmarshal(col.TypeInfo, iter.rows[iter.pos][c], dest[i])
+			i++
 		}
 
-		iter.err = Unmarshal(col.TypeInfo, iter.rows[iter.pos][c], dest[i])
 		if iter.err != nil {
 			return false
 		}
-		i++
 	}
 
 	iter.pos++
@@ -707,12 +790,14 @@ func (n *nextIter) fetch() *Iter {
 }
 
 type Batch struct {
-	Type         BatchType
-	Entries      []BatchEntry
-	Cons         Consistency
-	rt           RetryPolicy
-	attempts     int
-	totalLatency int64
+	Type             BatchType
+	Entries          []BatchEntry
+	Cons             Consistency
+	rt               RetryPolicy
+	attempts         int
+	totalLatency     int64
+	serialCons       SerialConsistency
+	defaultTimestamp bool
 }
 
 // NewBatch creates a new batch operation without defaults from the cluster
@@ -722,7 +807,11 @@ func NewBatch(typ BatchType) *Batch {
 
 // NewBatch creates a new batch operation using defaults defined in the cluster
 func (s *Session) NewBatch(typ BatchType) *Batch {
-	return &Batch{Type: typ, rt: s.cfg.RetryPolicy}
+	s.mu.RLock()
+	batch := &Batch{Type: typ, rt: s.cfg.RetryPolicy, serialCons: s.cfg.SerialConsistency,
+		Cons: s.cons, defaultTimestamp: s.cfg.DefaultTimestamp}
+	s.mu.RUnlock()
+	return batch
 }
 
 // Attempts returns the number of attempts made to execute the batch.
@@ -765,6 +854,29 @@ func (b *Batch) RetryPolicy(r RetryPolicy) *Batch {
 // Size returns the number of batch statements to be executed by the batch operation.
 func (b *Batch) Size() int {
 	return len(b.Entries)
+}
+
+// SerialConsistency sets the consistencyc level for the
+// serial phase of conditional updates. That consitency can only be
+// either SERIAL or LOCAL_SERIAL and if not present, it defaults to
+// SERIAL. This option will be ignored for anything else that a
+// conditional update/insert.
+//
+// Only available for protocol 3 and above
+func (b *Batch) SerialConsistency(cons SerialConsistency) *Batch {
+	b.serialCons = cons
+	return b
+}
+
+// DefaultTimestamp will enable the with default timestamp flag on the query.
+// If enable, this will replace the server side assigned
+// timestamp as default timestamp. Note that a timestamp in the query itself
+// will still override this timestamp. This is entirely optional.
+//
+// Only available on protocol >= 3
+func (b *Batch) DefaultTimestamp(enable bool) *Batch {
+	b.defaultTimestamp = enable
+	return b
 }
 
 type BatchType byte

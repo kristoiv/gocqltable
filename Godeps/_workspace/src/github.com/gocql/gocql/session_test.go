@@ -3,18 +3,25 @@
 package gocql
 
 import (
+	"fmt"
 	"testing"
 )
 
 func TestSessionAPI(t *testing.T) {
 
-	cfg := ClusterConfig{}
-	pool, err := NewSimplePool(&cfg)
+	cfg := &ClusterConfig{}
+	pool, err := NewSimplePool(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	s := NewSession(pool, cfg)
+	s := &Session{
+		Pool: pool,
+		cfg:  *cfg,
+		cons: Quorum,
+	}
+
+	defer s.Close()
 
 	s.SetConsistency(All)
 	if s.cons != All {
@@ -152,14 +159,19 @@ func TestQueryShouldPrepare(t *testing.T) {
 
 func TestBatchBasicAPI(t *testing.T) {
 
-	cfg := ClusterConfig{}
-	cfg.RetryPolicy = &SimpleRetryPolicy{NumRetries: 2}
-	pool, err := NewSimplePool(&cfg)
+	cfg := &ClusterConfig{RetryPolicy: &SimpleRetryPolicy{NumRetries: 2}}
+	pool, err := NewSimplePool(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	s := NewSession(pool, cfg)
+	s := &Session{
+		Pool: pool,
+		cfg:  *cfg,
+		cons: Quorum,
+	}
+	defer s.Close()
+
 	b := s.NewBatch(UnloggedBatch)
 	if b.Type != UnloggedBatch {
 		t.Fatalf("expceted batch.Type to be '%v', got '%v'", UnloggedBatch, b.Type)
@@ -221,7 +233,7 @@ func TestBatchBasicAPI(t *testing.T) {
 }
 
 func TestConsistencyNames(t *testing.T) {
-	names := map[Consistency]string{
+	names := map[fmt.Stringer]string{
 		Any:         "ANY",
 		One:         "ONE",
 		Two:         "TWO",

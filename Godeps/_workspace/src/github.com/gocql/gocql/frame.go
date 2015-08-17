@@ -5,9 +5,12 @@
 package gocql
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -18,6 +21,8 @@ const (
 	protoVersion1      = 0x01
 	protoVersion2      = 0x02
 	protoVersion3      = 0x03
+
+	maxFrameSize = 256 * 1024 * 1024
 )
 
 type protoVersion byte
@@ -135,16 +140,14 @@ type Consistency uint16
 
 const (
 	Any         Consistency = 0x00
-	One                     = 0x01
-	Two                     = 0x02
-	Three                   = 0x03
-	Quorum                  = 0x04
-	All                     = 0x05
-	LocalQuorum             = 0x06
-	EachQuorum              = 0x07
-	Serial                  = 0x08
-	LocalSerial             = 0x09
-	LocalOne                = 0x0A
+	One         Consistency = 0x01
+	Two         Consistency = 0x02
+	Three       Consistency = 0x03
+	Quorum      Consistency = 0x04
+	All         Consistency = 0x05
+	LocalQuorum Consistency = 0x06
+	EachQuorum  Consistency = 0x07
+	LocalOne    Consistency = 0x0A
 )
 
 func (c Consistency) String() string {
@@ -165,10 +168,6 @@ func (c Consistency) String() string {
 		return "LOCAL_QUORUM"
 	case EachQuorum:
 		return "EACH_QUORUM"
-	case Serial:
-		return "SERIAL"
-	case LocalSerial:
-		return "LOCAL_SERIAL"
 	case LocalOne:
 		return "LOCAL_ONE"
 	default:
@@ -176,8 +175,30 @@ func (c Consistency) String() string {
 	}
 }
 
+type SerialConsistency uint16
+
+const (
+	Serial      SerialConsistency = 0x08
+	LocalSerial SerialConsistency = 0x09
+)
+
+func (s SerialConsistency) String() string {
+	switch s {
+	case Serial:
+		return "SERIAL"
+	case LocalSerial:
+		return "LOCAL_SERIAL"
+	default:
+		return fmt.Sprintf("UNKNOWN_SERIAL_CONS_0x%x", uint16(s))
+	}
+}
+
 const (
 	apacheCassandraTypePrefix = "org.apache.cassandra.db.marshal."
+)
+
+var (
+	ErrFrameTooBig = errors.New("frame length is bigger than the maximum alowed")
 )
 
 func writeInt(p []byte, n int32) {
@@ -293,14 +314,28 @@ func readHeader(r io.Reader, p []byte) (head frameHeader, err error) {
 	}
 
 	version := p[0] & protoVersionMask
-	head.version = protoVersion(p[0])
 
+	if version < protoVersion1 || version > protoVersion3 {
+		err = fmt.Errorf("invalid version: %x", version)
+		return
+	}
+
+	head.version = protoVersion(p[0])
 	head.flags = p[1]
+
 	if version > protoVersion2 {
+		if len(p) < 9 {
+			return frameHeader{}, fmt.Errorf("not enough bytes to read header require 9 got: %d", len(p))
+		}
+
 		head.stream = int(int16(p[2])<<8 | int16(p[3]))
 		head.op = frameOp(p[4])
 		head.length = int(readInt(p[5:]))
 	} else {
+		if len(p) < 8 {
+			return frameHeader{}, fmt.Errorf("not enough bytes to read header require 8 got: %d", len(p))
+		}
+
 		head.stream = int(int8(p[2]))
 		head.op = frameOp(p[3])
 		head.length = int(readInt(p[4:]))
@@ -316,6 +351,17 @@ func (f *framer) trace() {
 
 // reads a frame form the wire into the framers buffer
 func (f *framer) readFrame(head *frameHeader) error {
+	if head.length < 0 {
+		return fmt.Errorf("frame body length can not be less than 0: %d", head.length)
+	} else if head.length > maxFrameSize {
+		// need to free up the connection to be used again
+		_, err := io.CopyN(ioutil.Discard, f.r, int64(head.length))
+		if err != nil {
+			return fmt.Errorf("error whilst trying to discard frame with invalid length: %v", err)
+		}
+		return ErrFrameTooBig
+	}
+
 	if cap(f.readBuffer) >= head.length {
 		f.rbuf = f.readBuffer[:head.length]
 	} else {
@@ -344,7 +390,16 @@ func (f *framer) readFrame(head *frameHeader) error {
 	return nil
 }
 
-func (f *framer) parseFrame() (frame, error) {
+func (f *framer) parseFrame() (frame frame, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(runtime.Error); ok {
+				panic(r)
+			}
+			err = r.(error)
+		}
+	}()
+
 	if f.header.version.request() {
 		return nil, NewErrProtocol("got a request frame from server: %v", f.header.version)
 	}
@@ -352,11 +407,6 @@ func (f *framer) parseFrame() (frame, error) {
 	if f.header.flags&flagTracing == flagTracing {
 		f.readTrace()
 	}
-
-	var (
-		frame frame
-		err   error
-	)
 
 	// asumes that the frame body has been read into rbuf
 	switch f.header.op {
@@ -378,7 +428,7 @@ func (f *framer) parseFrame() (frame, error) {
 		return nil, NewErrProtocol("unknown op in frame header: %s", f.header.op)
 	}
 
-	return frame, err
+	return
 }
 
 func (f *framer) parseErrorFrame() frame {
@@ -486,6 +536,12 @@ func (f *framer) setLength(length int) {
 }
 
 func (f *framer) finishWrite() error {
+	if len(f.wbuf) > maxFrameSize {
+		// huge app frame, lets remove it so it doesnt bloat the heap
+		f.wbuf = make([]byte, defaultBufSize)
+		return ErrFrameTooBig
+	}
+
 	if f.wbuf[1]&flagCompress == flagCompress {
 		if f.compres == nil {
 			panic("compress flag set with no compressor")
@@ -600,6 +656,22 @@ func (f *framer) readTypeInfo() TypeInfo {
 
 		return tuple
 
+	case TypeUDT:
+		udt := UDTTypeInfo{
+			NativeType: simple,
+		}
+		udt.KeySpace = f.readString()
+		udt.Name = f.readString()
+
+		n := f.readShort()
+		udt.Elements = make([]UDTField, n)
+		for i := 0; i < int(n); i++ {
+			field := &udt.Elements[i]
+			field.Name = f.readString()
+			field.Type = f.readTypeInfo()
+		}
+
+		return udt
 	case TypeMap, TypeList, TypeSet:
 		collection := CollectionType{
 			NativeType: simple,
@@ -635,12 +707,34 @@ func (r resultMetadata) String() string {
 	return fmt.Sprintf("[metadata flags=0x%x paging_state=% X columns=%v]", r.flags, r.pagingState, r.columns)
 }
 
+func (f *framer) readCol(col *ColumnInfo, meta *resultMetadata, globalSpec bool, keyspace, table string) {
+	if !globalSpec {
+		col.Keyspace = f.readString()
+		col.Table = f.readString()
+	} else {
+		col.Keyspace = keyspace
+		col.Table = table
+	}
+
+	col.Name = f.readString()
+	col.TypeInfo = f.readTypeInfo()
+	switch v := col.TypeInfo.(type) {
+	// maybe also UDT
+	case TupleTypeInfo:
+		// -1 because we already included the tuple column
+		meta.actualColCount += len(v.Elems) - 1
+	}
+}
+
 func (f *framer) parseResultMetadata() resultMetadata {
 	meta := resultMetadata{
 		flags: f.readInt(),
 	}
 
 	colCount := f.readInt()
+	if colCount < 0 {
+		panic(fmt.Errorf("received negative column count: %d", colCount))
+	}
 	meta.actualColCount = colCount
 
 	if meta.flags&flagHasMorePages == flagHasMorePages {
@@ -658,26 +752,21 @@ func (f *framer) parseResultMetadata() resultMetadata {
 		table = f.readString()
 	}
 
-	cols := make([]ColumnInfo, colCount)
-
-	for i := 0; i < colCount; i++ {
-		col := &cols[i]
-
-		if !globalSpec {
-			col.Keyspace = f.readString()
-			col.Table = f.readString()
-		} else {
-			col.Keyspace = keyspace
-			col.Table = table
+	var cols []ColumnInfo
+	if colCount < 1000 {
+		// preallocate columninfo to avoid excess copying
+		cols = make([]ColumnInfo, colCount)
+		for i := 0; i < colCount; i++ {
+			f.readCol(&cols[i], &meta, globalSpec, keyspace, table)
 		}
 
-		col.Name = f.readString()
-		col.TypeInfo = f.readTypeInfo()
-		switch v := col.TypeInfo.(type) {
-		// maybe also UDT
-		case TupleTypeInfo:
-			// -1 because we already included the tuple column
-			meta.actualColCount += len(v.Elems) - 1
+	} else {
+		// use append, huge number of columns usually indicates a corrupt frame or
+		// just a huge row.
+		for i := 0; i < colCount; i++ {
+			var col ColumnInfo
+			f.readCol(&col, &meta, globalSpec, keyspace, table)
+			cols = append(cols, col)
 		}
 	}
 
@@ -728,6 +817,10 @@ func (f *framer) parseResultRows() frame {
 	meta := f.parseResultMetadata()
 
 	numRows := f.readInt()
+	if numRows < 0 {
+		panic(fmt.Errorf("invalid row_count in result frame: %d", numRows))
+	}
+
 	colCount := len(meta.columns)
 
 	rows := make([][][]byte, numRows)
@@ -904,14 +997,14 @@ type queryParams struct {
 	values            []queryValues
 	pageSize          int
 	pagingState       []byte
-	serialConsistency Consistency
+	serialConsistency SerialConsistency
 	// v3+
-	timestamp *time.Time
+	defaultTimestamp bool
 }
 
 func (q queryParams) String() string {
-	return fmt.Sprintf("[query_params consistency=%v skip_meta=%v page_size=%d paging_state=%q serial_consistency=%v timestamp=%v values=%v]",
-		q.consistency, q.skipMeta, q.pageSize, q.pagingState, q.serialConsistency, q.timestamp, q.values)
+	return fmt.Sprintf("[query_params consistency=%v skip_meta=%v page_size=%d paging_state=%q serial_consistency=%v default_timestamp=%v values=%v]",
+		q.consistency, q.skipMeta, q.pageSize, q.pagingState, q.serialConsistency, q.defaultTimestamp, q.values)
 }
 
 func (f *framer) writeQueryParams(opts *queryParams) {
@@ -942,9 +1035,10 @@ func (f *framer) writeQueryParams(opts *queryParams) {
 
 	// protoV3 specific things
 	if f.proto > protoVersion2 {
-		if opts.timestamp != nil {
+		if opts.defaultTimestamp {
 			flags |= flagDefaultTimestamp
 		}
+
 		if len(opts.values) > 0 && opts.values[0].name != "" {
 			flags |= flagWithNameValues
 			names = true
@@ -972,14 +1066,12 @@ func (f *framer) writeQueryParams(opts *queryParams) {
 	}
 
 	if opts.serialConsistency > 0 {
-		f.writeConsistency(opts.serialConsistency)
+		f.writeConsistency(Consistency(opts.serialConsistency))
 	}
 
-	if f.proto > protoVersion2 && opts.timestamp != nil {
+	if f.proto > protoVersion2 && opts.defaultTimestamp {
 		// timestamp in microseconds
-		// TODO: should the timpestamp be set on the queryParams or should we set
-		// it here?
-		ts := opts.timestamp.UnixNano() / 1000
+		ts := time.Now().UnixNano() / 1000
 		f.writeLong(ts)
 	}
 }
@@ -1048,10 +1140,12 @@ type batchStatment struct {
 }
 
 type writeBatchFrame struct {
-	typ               BatchType
-	statements        []batchStatment
-	consistency       Consistency
-	serialConsistency Consistency
+	typ         BatchType
+	statements  []batchStatment
+	consistency Consistency
+
+	// v3+
+	serialConsistency SerialConsistency
 	defaultTimestamp  bool
 }
 
@@ -1073,11 +1167,11 @@ func (f *framer) writeBatchFrame(streamID int, w *writeBatchFrame) error {
 		if len(b.preparedID) == 0 {
 			f.writeByte(0)
 			f.writeLongString(b.statement)
-			continue
+		} else {
+			f.writeByte(1)
+			f.writeShortBytes(b.preparedID)
 		}
 
-		f.writeByte(1)
-		f.writeShortBytes(b.preparedID)
 		f.writeShort(uint16(len(b.values)))
 		for j := range b.values {
 			col := &b.values[j]
@@ -1104,7 +1198,7 @@ func (f *framer) writeBatchFrame(streamID int, w *writeBatchFrame) error {
 		f.writeByte(flags)
 
 		if w.serialConsistency > 0 {
-			f.writeConsistency(w.serialConsistency)
+			f.writeConsistency(Consistency(w.serialConsistency))
 		}
 		if w.defaultTimestamp {
 			now := time.Now().UnixNano() / 1000
@@ -1116,24 +1210,38 @@ func (f *framer) writeBatchFrame(streamID int, w *writeBatchFrame) error {
 }
 
 func (f *framer) readByte() byte {
+	if len(f.rbuf) < 1 {
+		panic(fmt.Errorf("not enough bytes in buffer to read byte require 1 got: %d", len(f.rbuf)))
+	}
+
 	b := f.rbuf[0]
 	f.rbuf = f.rbuf[1:]
 	return b
 }
 
 func (f *framer) readInt() (n int) {
+	if len(f.rbuf) < 4 {
+		panic(fmt.Errorf("not enough bytes in buffer to read int require 4 got: %d", len(f.rbuf)))
+	}
+
 	n = int(int32(f.rbuf[0])<<24 | int32(f.rbuf[1])<<16 | int32(f.rbuf[2])<<8 | int32(f.rbuf[3]))
 	f.rbuf = f.rbuf[4:]
 	return
 }
 
 func (f *framer) readShort() (n uint16) {
+	if len(f.rbuf) < 2 {
+		panic(fmt.Errorf("not enough bytes in buffer to read short require 2 got: %d", len(f.rbuf)))
+	}
 	n = uint16(f.rbuf[0])<<8 | uint16(f.rbuf[1])
 	f.rbuf = f.rbuf[2:]
 	return
 }
 
 func (f *framer) readLong() (n int64) {
+	if len(f.rbuf) < 8 {
+		panic(fmt.Errorf("not enough bytes in buffer to read long require 8 got: %d", len(f.rbuf)))
+	}
 	n = int64(f.rbuf[0])<<56 | int64(f.rbuf[1])<<48 | int64(f.rbuf[2])<<40 | int64(f.rbuf[3])<<32 |
 		int64(f.rbuf[4])<<24 | int64(f.rbuf[5])<<16 | int64(f.rbuf[6])<<8 | int64(f.rbuf[7])
 	f.rbuf = f.rbuf[8:]
@@ -1142,6 +1250,11 @@ func (f *framer) readLong() (n int64) {
 
 func (f *framer) readString() (s string) {
 	size := f.readShort()
+
+	if len(f.rbuf) < int(size) {
+		panic(fmt.Errorf("not enough bytes in buffer to read string require %d got: %d", size, len(f.rbuf)))
+	}
+
 	s = string(f.rbuf[:size])
 	f.rbuf = f.rbuf[size:]
 	return
@@ -1149,12 +1262,21 @@ func (f *framer) readString() (s string) {
 
 func (f *framer) readLongString() (s string) {
 	size := f.readInt()
+
+	if len(f.rbuf) < size {
+		panic(fmt.Errorf("not enough bytes in buffer to read long string require %d got: %d", size, len(f.rbuf)))
+	}
+
 	s = string(f.rbuf[:size])
 	f.rbuf = f.rbuf[size:]
 	return
 }
 
 func (f *framer) readUUID() *UUID {
+	if len(f.rbuf) < 16 {
+		panic(fmt.Errorf("not enough bytes in buffer to read uuid require %d got: %d", 16, len(f.rbuf)))
+	}
+
 	// TODO: how to handle this error, if it is a uuid, then sureley, problems?
 	u, _ := UUIDFromBytes(f.rbuf[:16])
 	f.rbuf = f.rbuf[16:]
@@ -1178,6 +1300,10 @@ func (f *framer) readBytes() []byte {
 		return nil
 	}
 
+	if len(f.rbuf) < size {
+		panic(fmt.Errorf("not enough bytes in buffer to read bytes require %d got: %d", size, len(f.rbuf)))
+	}
+
 	// we cant make assumptions about the length of the life of the supplied byte
 	// slice so we defensivly copy it out of the underlying buffer. This has the
 	// downside of increasing allocs per read but will provide much greater memory
@@ -1192,6 +1318,9 @@ func (f *framer) readBytes() []byte {
 
 func (f *framer) readShortBytes() []byte {
 	size := f.readShort()
+	if len(f.rbuf) < int(size) {
+		panic(fmt.Errorf("not enough bytes in buffer to read short bytes: require %d got %d", size, len(f.rbuf)))
+	}
 
 	l := make([]byte, size)
 	copy(l, f.rbuf[:size])
@@ -1201,11 +1330,19 @@ func (f *framer) readShortBytes() []byte {
 }
 
 func (f *framer) readInet() (net.IP, int) {
+	if len(f.rbuf) < 1 {
+		panic(fmt.Errorf("not enough bytes in buffer to read inet size require %d got: %d", 1, len(f.rbuf)))
+	}
+
 	size := f.rbuf[0]
 	f.rbuf = f.rbuf[1:]
 
 	if !(size == 4 || size == 16) {
-		panic(fmt.Sprintf("invalid IP size: %d", size))
+		panic(fmt.Errorf("invalid IP size: %d", size))
+	}
+
+	if len(f.rbuf) < 1 {
+		panic(fmt.Errorf("not enough bytes in buffer to read inet require %d got: %d", size, len(f.rbuf)))
 	}
 
 	ip := make([]byte, size)

@@ -1,3 +1,6 @@
+// Copyright (c) 2012 The gocql Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 // +build all unit
 
 package gocql
@@ -55,7 +58,7 @@ func TestSSLSimple(t *testing.T) {
 	srv := NewSSLTestServer(t, defaultProto)
 	defer srv.Stop()
 
-	db, err := createTestSslCluster(srv.Address, defaultProto).CreateSession()
+	db, err := createTestSslCluster(srv.Address, defaultProto, true).CreateSession()
 	if err != nil {
 		t.Fatalf("0x%x: NewCluster: %v", defaultProto, err)
 	}
@@ -65,14 +68,31 @@ func TestSSLSimple(t *testing.T) {
 	}
 }
 
-func createTestSslCluster(hosts string, proto uint8) *ClusterConfig {
+func TestSSLSimpleNoClientCert(t *testing.T) {
+	srv := NewSSLTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	db, err := createTestSslCluster(srv.Address, defaultProto, false).CreateSession()
+	if err != nil {
+		t.Fatalf("0x%x: NewCluster: %v", defaultProto, err)
+	}
+
+	if err := db.Query("void").Exec(); err != nil {
+		t.Fatalf("0x%x: %v", defaultProto, err)
+	}
+}
+
+func createTestSslCluster(hosts string, proto uint8, useClientCert bool) *ClusterConfig {
 	cluster := NewCluster(hosts)
-	cluster.SslOpts = &SslOptions{
-		CertPath:               "testdata/pki/gocql.crt",
-		KeyPath:                "testdata/pki/gocql.key",
+	sslOpts := &SslOptions{
 		CaPath:                 "testdata/pki/ca.crt",
 		EnableHostVerification: false,
 	}
+	if useClientCert {
+		sslOpts.CertPath = "testdata/pki/gocql.crt"
+		sslOpts.KeyPath = "testdata/pki/gocql.key"
+	}
+	cluster.SslOpts = sslOpts
 	cluster.ProtoVersion = int(proto)
 	return cluster
 }
@@ -162,22 +182,7 @@ func TestQueryRetry(t *testing.T) {
 	}
 }
 
-func TestSlowQuery(t *testing.T) {
-	srv := NewTestServer(t, defaultProto)
-	defer srv.Stop()
-
-	db, err := newTestSession(srv.Address, defaultProto)
-	if err != nil {
-		t.Errorf("NewCluster: %v", err)
-		return
-	}
-
-	if err := db.Query("slow").Exec(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRoundRobin(t *testing.T) {
+func TestSimplePoolRoundRobin(t *testing.T) {
 	servers := make([]*TestServer, 5)
 	addrs := make([]string, len(servers))
 	for n := 0; n < len(servers); n++ {
@@ -223,7 +228,7 @@ func TestRoundRobin(t *testing.T) {
 	}
 
 	if diff > 0 {
-		t.Fatal("diff:", diff)
+		t.Errorf("Expected 0 difference in usage but was %d", diff)
 	}
 }
 
@@ -258,7 +263,7 @@ func TestConnClosing(t *testing.T) {
 	conns := pool.Size()
 
 	if conns != numConns {
-		t.Fatalf("Expected to have %d connections but have %d", numConns, conns)
+		t.Errorf("Expected to have %d connections but have %d", numConns, conns)
 	}
 }
 
@@ -279,7 +284,7 @@ func TestStreams_Protocol1(t *testing.T) {
 	defer db.Close()
 
 	var wg sync.WaitGroup
-	for i := 0; i < db.cfg.NumStreams; i++ {
+	for i := 1; i < db.cfg.NumStreams; i++ {
 		// here were just validating that if we send NumStream request we get
 		// a response for every stream and the lengths for the queries are set
 		// correctly.
@@ -310,7 +315,7 @@ func TestStreams_Protocol2(t *testing.T) {
 	}
 	defer db.Close()
 
-	for i := 0; i < db.cfg.NumStreams; i++ {
+	for i := 1; i < db.cfg.NumStreams; i++ {
 		// the test server processes each conn synchronously
 		// here were just validating that if we send NumStream request we get
 		// a response for every stream and the lengths for the queries are set
@@ -337,7 +342,7 @@ func TestStreams_Protocol3(t *testing.T) {
 	}
 	defer db.Close()
 
-	for i := 0; i < db.cfg.NumStreams; i++ {
+	for i := 1; i < db.cfg.NumStreams; i++ {
 		// the test server processes each conn synchronously
 		// here were just validating that if we send NumStream request we get
 		// a response for every stream and the lengths for the queries are set
@@ -373,6 +378,245 @@ func BenchmarkProtocolV3(b *testing.B) {
 	}
 }
 
+func TestRoundRobinConnPoolRoundRobin(t *testing.T) {
+	// create 5 test servers
+	servers := make([]*TestServer, 5)
+	addrs := make([]string, len(servers))
+	for n := 0; n < len(servers); n++ {
+		servers[n] = NewTestServer(t, defaultProto)
+		addrs[n] = servers[n].Address
+		defer servers[n].Stop()
+	}
+
+	// create a new cluster using the policy-based round robin conn pool
+	cluster := NewCluster(addrs...)
+	cluster.ConnPoolType = NewRoundRobinConnPool
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("failed to create a new session: %v", err)
+	}
+
+	// Sleep to allow the pool to fill
+	time.Sleep(100 * time.Millisecond)
+
+	// run concurrent queries against the pool, server usage should
+	// be even
+	var wg sync.WaitGroup
+	wg.Add(5)
+	for n := 0; n < 5; n++ {
+		go func() {
+			for j := 0; j < 5; j++ {
+				if err := db.Query("void").Exec(); err != nil {
+					t.Errorf("Query failed with error: %v", err)
+				}
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	db.Close()
+
+	// wait for the pool to drain
+	time.Sleep(100 * time.Millisecond)
+	size := db.Pool.Size()
+	if size != 0 {
+		t.Errorf("connection pool did not drain, still contains %d connections", size)
+	}
+
+	// verify that server usage is even
+	diff := 0
+	for n := 1; n < len(servers); n++ {
+		d := 0
+		if servers[n].nreq > servers[n-1].nreq {
+			d = int(servers[n].nreq - servers[n-1].nreq)
+		} else {
+			d = int(servers[n-1].nreq - servers[n].nreq)
+		}
+		if d > diff {
+			diff = d
+		}
+	}
+
+	if diff > 0 {
+		t.Errorf("expected 0 difference in usage but was %d", diff)
+	}
+}
+
+// This tests that the policy connection pool handles SSL correctly
+func TestPolicyConnPoolSSL(t *testing.T) {
+	srv := NewSSLTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	cluster := createTestSslCluster(srv.Address, defaultProto, true)
+	cluster.ConnPoolType = NewRoundRobinConnPool
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("failed to create new session: %v", err)
+	}
+
+	if err := db.Query("void").Exec(); err != nil {
+		t.Errorf("query failed due to error: %v", err)
+	}
+
+	db.Close()
+
+	// wait for the pool to drain
+	time.Sleep(100 * time.Millisecond)
+	size := db.Pool.Size()
+	if size != 0 {
+		t.Errorf("connection pool did not drain, still contains %d connections", size)
+	}
+}
+
+func TestQueryTimeout(t *testing.T) {
+	srv := NewTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	cluster := NewCluster(srv.Address)
+	// Set the timeout arbitrarily low so that the query hits the timeout in a
+	// timely manner.
+	cluster.Timeout = 1 * time.Millisecond
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Errorf("NewCluster: %v", err)
+	}
+	defer db.Close()
+
+	ch := make(chan error, 1)
+
+	go func() {
+		err := db.Query("timeout").Exec()
+		if err != nil {
+			ch <- err
+			return
+		}
+		t.Errorf("err was nil, expected to get a timeout after %v", db.cfg.Timeout)
+	}()
+
+	select {
+	case err := <-ch:
+		if err != ErrTimeoutNoResponse {
+			t.Fatalf("expected to get %v for timeout got %v", ErrTimeoutNoResponse, err)
+		}
+	case <-time.After(10*time.Millisecond + db.cfg.Timeout):
+		// ensure that the query goroutines have been scheduled
+		t.Fatalf("query did not timeout after %v", db.cfg.Timeout)
+	}
+}
+
+func TestQueryTimeoutReuseStream(t *testing.T) {
+	srv := NewTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	cluster := NewCluster(srv.Address)
+	// Set the timeout arbitrarily low so that the query hits the timeout in a
+	// timely manner.
+	cluster.Timeout = 1 * time.Millisecond
+	cluster.NumConns = 1
+	cluster.NumStreams = 1
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("NewCluster: %v", err)
+	}
+	defer db.Close()
+
+	db.Query("slow").Exec()
+
+	err = db.Query("void").Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestQueryTimeoutClose(t *testing.T) {
+	srv := NewTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	cluster := NewCluster(srv.Address)
+	// Set the timeout arbitrarily low so that the query hits the timeout in a
+	// timely manner.
+	cluster.Timeout = 1000 * time.Millisecond
+	cluster.NumConns = 1
+	cluster.NumStreams = 1
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatalf("NewCluster: %v", err)
+	}
+
+	ch := make(chan error)
+	go func() {
+		err := db.Query("timeout").Exec()
+		ch <- err
+	}()
+	// ensure that the above goroutine gets sheduled
+	time.Sleep(50 * time.Millisecond)
+
+	db.Close()
+	select {
+	case err = <-ch:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timedout waiting to get a response once cluster is closed")
+	}
+
+	if err != ErrConnectionClosed {
+		t.Fatalf("expected to get %v got %v", ErrConnectionClosed, err)
+	}
+}
+
+func TestExecPanic(t *testing.T) {
+	t.Skip("test can cause unrelated failures, skipping until it can be fixed.")
+	srv := NewTestServer(t, defaultProto)
+	defer srv.Stop()
+
+	cluster := NewCluster(srv.Address)
+	// Set the timeout arbitrarily low so that the query hits the timeout in a
+	// timely manner.
+	cluster.Timeout = 5 * time.Millisecond
+	cluster.NumConns = 1
+	// cluster.NumStreams = 1
+
+	db, err := cluster.CreateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	streams := db.cfg.NumStreams
+
+	wg := &sync.WaitGroup{}
+	wg.Add(streams)
+	for i := 0; i < streams; i++ {
+		go func() {
+			defer wg.Done()
+			q := db.Query("void")
+			for {
+				if err := q.Exec(); err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < int(TimeoutLimit); i++ {
+			db.Query("timeout").Exec()
+		}
+	}()
+
+	wg.Wait()
+
+	time.Sleep(500 * time.Millisecond)
+}
+
 func NewTestServer(t testing.TB, protocol uint8) *TestServer {
 	laddr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -395,6 +639,7 @@ func NewTestServer(t testing.TB, protocol uint8) *TestServer {
 		t:          t,
 		protocol:   protocol,
 		headerSize: headerSize,
+		quit:       make(chan struct{}),
 	}
 
 	go srv.serve()
@@ -432,6 +677,7 @@ func NewSSLTestServer(t testing.TB, protocol uint8) *TestServer {
 		t:          t,
 		protocol:   protocol,
 		headerSize: headerSize,
+		quit:       make(chan struct{}),
 	}
 	go srv.serve()
 	return srv
@@ -447,6 +693,8 @@ type TestServer struct {
 
 	protocol   byte
 	headerSize int
+
+	quit chan struct{}
 }
 
 func (srv *TestServer) serve() {
@@ -479,6 +727,7 @@ func (srv *TestServer) serve() {
 
 func (srv *TestServer) Stop() {
 	srv.listen.Close()
+	close(srv.quit)
 }
 
 func (srv *TestServer) process(f *framer) {
@@ -506,24 +755,27 @@ func (srv *TestServer) process(f *framer) {
 			f.writeHeader(0, opError, head.stream)
 			f.writeInt(0x1001)
 			f.writeString("query killed")
-		case "slow":
-			go func() {
-				<-time.After(1 * time.Second)
-				f.writeHeader(0, opResult, head.stream)
-				f.wbuf[0] = srv.protocol | 0x80
-				f.writeInt(resultKindVoid)
-				if err := f.finishWrite(); err != nil {
-					srv.t.Error(err)
-				}
-			}()
-
-			return
 		case "use":
 			f.writeInt(resultKindKeyspace)
 			f.writeString(strings.TrimSpace(query[3:]))
 		case "void":
 			f.writeHeader(0, opResult, head.stream)
 			f.writeInt(resultKindVoid)
+		case "timeout":
+			<-srv.quit
+			return
+		case "slow":
+			go func() {
+				f.writeHeader(0, opResult, head.stream)
+				f.writeInt(resultKindVoid)
+				f.wbuf[0] = srv.protocol | 0x80
+				select {
+				case <-srv.quit:
+				case <-time.After(50 * time.Millisecond):
+					f.finishWrite()
+				}
+			}()
+			return
 		default:
 			f.writeHeader(0, opResult, head.stream)
 			f.writeInt(resultKindVoid)
