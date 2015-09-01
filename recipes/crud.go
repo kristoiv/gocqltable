@@ -14,6 +14,17 @@ import (
 	r "github.com/elvtechnology/gocqltable/reflect"
 )
 
+type RangeInterface interface {
+	LessThan(rangeKey string, value interface{}) RangeInterface
+	LessThanOrEqual(rangeKey string, value interface{}) RangeInterface
+	MoreThan(rangeKey string, value interface{}) RangeInterface
+	MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface
+	EqualTo(rangeKey string, value interface{}) RangeInterface
+	OrderBy(fieldAndDirection string) RangeInterface
+	Limit(l int) RangeInterface
+	Fetch() (interface{}, error)
+}
+
 type CRUD struct {
 	gocqltable.TableInterface
 }
@@ -197,8 +208,7 @@ func (t CRUD) Delete(row interface{}) error {
 
 }
 
-func (t CRUD) Range(ids ...interface{}) Range {
-
+func (t CRUD) Range(ids ...interface{}) RangeInterface {
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -211,8 +221,8 @@ func (t CRUD) Range(ids ...interface{}) Range {
 		if len(ids) == numAppended {
 			break
 		}
-		rangeObj = rangeObj.EqualTo(key, ids[idx])
-		numAppended += 1
+		rangeObj = rangeObj.EqualTo(key, ids[idx]).(Range)
+		numAppended++
 	}
 
 	return rangeObj
@@ -228,46 +238,46 @@ type Range struct {
 	filtering bool
 }
 
-func (r Range) LessThan(rangeKey string, value interface{}) Range {
+func (r Range) LessThan(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" < ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) LessThanOrEqual(rangeKey string, value interface{}) Range {
+func (r Range) LessThanOrEqual(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" <= ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) MoreThan(rangeKey string, value interface{}) Range {
+func (r Range) MoreThan(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" > ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) Range {
+func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" >= ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) EqualTo(rangeKey string, value interface{}) Range {
+func (r Range) EqualTo(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" = ?")
 	r.whereVals = append(r.whereVals, value)
 	return r
 }
 
-func (r Range) OrderBy(fieldAndDirection string) Range {
+func (r Range) OrderBy(fieldAndDirection string) RangeInterface {
 	r.order = fieldAndDirection
 	return r
 }
 
-func (r Range) Limit(l int) Range {
+func (r Range) Limit(l int) RangeInterface {
 	r.limit = &l
 	return r
 }
