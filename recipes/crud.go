@@ -22,6 +22,7 @@ type RangeInterface interface {
 	EqualTo(rangeKey string, value interface{}) RangeInterface
 	OrderBy(fieldAndDirection string) RangeInterface
 	Limit(l int) RangeInterface
+	Select(s []string) RangeInterface
 	Fetch() (interface{}, error)
 }
 
@@ -231,11 +232,12 @@ func (t CRUD) Range(ids ...interface{}) RangeInterface {
 type Range struct {
 	table gocqltable.TableInterface
 
-	where     []string
-	whereVals []interface{}
-	order     string
-	limit     *int
-	filtering bool
+	selectCols []string
+	where      []string
+	whereVals  []interface{}
+	order      string
+	limit      *int
+	filtering  bool
 }
 
 func (r Range) LessThan(rangeKey string, value interface{}) RangeInterface {
@@ -282,13 +284,18 @@ func (r Range) Limit(l int) RangeInterface {
 	return r
 }
 
-func (r Range) Fetch() (interface{}, error) {
+func (r Range) Select(s []string) RangeInterface {
+	r.selectCols = s
+	return r
+}
 
+func (r Range) Fetch() (interface{}, error) {
 	where := r.where
 	whereVals := r.whereVals
 	order := r.order
 	limit := r.limit
 	filtering := r.filtering
+	selectCols := r.selectCols
 
 	whereString := ""
 	if len(where) > 0 {
@@ -310,7 +317,12 @@ func (r Range) Fetch() (interface{}, error) {
 		filteringString = "ALLOW FILTERING"
 	}
 
-	iter := r.table.Query(fmt.Sprintf(`SELECT * FROM %q.%q %s %s %s %s`, r.table.Keyspace().Name(), r.table.Name(), whereString, orderString, limitString, filteringString), whereVals...).Fetch()
+	selectString := "*"
+	if len(selectCols) > 0 {
+		selectString = strings.Join(selectCols, ", ")
+	}
+	query := fmt.Sprintf(`SELECT %s FROM %q.%q %s %s %s %s`, selectString, r.table.Keyspace().Name(), r.table.Name(), whereString, orderString, limitString, filteringString)
+	iter := r.table.Query(query, whereVals...).Fetch()
 
 	result := reflect.Zero(reflect.SliceOf(reflect.PtrTo(reflect.TypeOf(r.table.Row())))) // Create a zero-value slice of pointers to our model type
 	for row := range iter.Range() {
