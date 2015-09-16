@@ -14,6 +14,19 @@ import (
 	r "github.com/elvtechnology/gocqltable/reflect"
 )
 
+type RangeInterface interface {
+	LessThan(rangeKey string, value interface{}) RangeInterface
+	LessThanOrEqual(rangeKey string, value interface{}) RangeInterface
+	MoreThan(rangeKey string, value interface{}) RangeInterface
+	MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface
+	EqualTo(rangeKey string, value interface{}) RangeInterface
+	OrderBy(fieldAndDirection string) RangeInterface
+	Limit(l int) RangeInterface
+	Select(s []string) RangeInterface
+	WhereIn(m map[string][]string) RangeInterface
+	Fetch() (interface{}, error)
+}
+
 type CRUD struct {
 	gocqltable.TableInterface
 }
@@ -197,8 +210,7 @@ func (t CRUD) Delete(row interface{}) error {
 
 }
 
-func (t CRUD) Range(ids ...interface{}) Range {
-
+func (t CRUD) Range(ids ...interface{}) RangeInterface {
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -211,8 +223,8 @@ func (t CRUD) Range(ids ...interface{}) Range {
 		if len(ids) == numAppended {
 			break
 		}
-		rangeObj = rangeObj.EqualTo(key, ids[idx])
-		numAppended += 1
+		rangeObj = rangeObj.EqualTo(key, ids[idx]).(Range)
+		numAppended++
 	}
 
 	return rangeObj
@@ -221,68 +233,100 @@ func (t CRUD) Range(ids ...interface{}) Range {
 type Range struct {
 	table gocqltable.TableInterface
 
-	where     []string
-	whereVals []interface{}
-	order     string
-	limit     *int
-	filtering bool
+	selectCols []string
+	whereIn    map[string][]string
+	where      []string
+	whereVals  []interface{}
+	order      string
+	limit      *int
+	filtering  bool
 }
 
-func (r Range) LessThan(rangeKey string, value interface{}) Range {
+func (r Range) LessThan(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" < ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) LessThanOrEqual(rangeKey string, value interface{}) Range {
+func (r Range) LessThanOrEqual(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" <= ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) MoreThan(rangeKey string, value interface{}) Range {
+func (r Range) MoreThan(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" > ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) Range {
+func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" >= ?")
 	r.whereVals = append(r.whereVals, value)
 	r.filtering = true
 	return r
 }
 
-func (r Range) EqualTo(rangeKey string, value interface{}) Range {
+func (r Range) EqualTo(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" = ?")
 	r.whereVals = append(r.whereVals, value)
 	return r
 }
 
-func (r Range) OrderBy(fieldAndDirection string) Range {
+func (r Range) OrderBy(fieldAndDirection string) RangeInterface {
 	r.order = fieldAndDirection
 	return r
 }
 
-func (r Range) Limit(l int) Range {
+func (r Range) Limit(l int) RangeInterface {
 	r.limit = &l
 	return r
 }
 
-func (r Range) Fetch() (interface{}, error) {
+func (r Range) Select(s []string) RangeInterface {
+	r.selectCols = s
+	return r
+}
 
+func (r Range) WhereIn(m map[string][]string) RangeInterface {
+	r.whereIn = m
+	return r
+}
+
+func (r Range) Fetch() (interface{}, error) {
 	where := r.where
 	whereVals := r.whereVals
 	order := r.order
 	limit := r.limit
 	filtering := r.filtering
+	selectCols := r.selectCols
+	whereIn := r.whereIn
 
 	whereString := ""
+	if len(whereIn) > 0 {
+		numberOfInClauses := 0
+		for col, in := range whereIn {
+			if len(in) == 0 {
+				continue
+			}
+			if numberOfInClauses > 0 {
+				whereString = whereString + " AND"
+			}
+			whereString = fmt.Sprintf("%s %q IN (%v)", whereString, col, strings.Join(in, ", "))
+			numberOfInClauses++
+		}
+	}
 	if len(where) > 0 {
-		whereString = "WHERE " + strings.Join(where, " AND ")
+		if len(whereString) > 0 {
+			whereString = whereString + " AND "
+		}
+		whereString = whereString + strings.Join(where, " AND ")
+	}
+	if len(whereString) > 0 {
+		whereString = "WHERE " + whereString
 	}
 
 	orderString := ""
@@ -300,7 +344,12 @@ func (r Range) Fetch() (interface{}, error) {
 		filteringString = "ALLOW FILTERING"
 	}
 
-	iter := r.table.Query(fmt.Sprintf(`SELECT * FROM %q.%q %s %s %s %s`, r.table.Keyspace().Name(), r.table.Name(), whereString, orderString, limitString, filteringString), whereVals...).Fetch()
+	selectString := "*"
+	if len(selectCols) > 0 {
+		selectString = strings.Join(selectCols, ", ")
+	}
+	query := fmt.Sprintf(`SELECT %s FROM %q.%q %s %s %s %s`, selectString, r.table.Keyspace().Name(), r.table.Name(), whereString, orderString, limitString, filteringString)
+	iter := r.table.Query(query, whereVals...).Fetch()
 
 	result := reflect.Zero(reflect.SliceOf(reflect.PtrTo(reflect.TypeOf(r.table.Row())))) // Create a zero-value slice of pointers to our model type
 	for row := range iter.Range() {
