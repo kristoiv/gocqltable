@@ -1,15 +1,11 @@
 {
 	"ImportPath": "github.com/elvtechnology/gocqltable",
-	"GoVersion": "go1.4.2",
+	"GoVersion": "go1.5.1",
 	"Deps": [
 		{
 			"ImportPath": "github.com/gocql/gocql",
-			"Comment": "1st_gen_framing-225-g9d122d6",
-			"Rev": "9d122d6ceec00b4b73bfb70de5587cdee7078d17"
-		},
-		{
-			"ImportPath": "github.com/golang/groupcache/lru",
-			"Rev": "604ed5785183e59ae2789449d89e73f3a2a77987"
+			"Comment": "1st_gen_framing-266-g944dcdb",
+			"Rev": "944dcdbd69cd4dc97e4dc86e2b1657af767efb9a"
 		},
 		{
 			"ImportPath": "github.com/golang/snappy",
