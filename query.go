@@ -6,7 +6,7 @@ import (
 
 	"github.com/gocql/gocql"
 
-	r "github.com/elvtechnology/gocqltable/reflect"
+	r "github.com/kristoiv/gocqltable/reflect"
 )
 
 type Query struct {
