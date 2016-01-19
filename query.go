@@ -62,7 +62,8 @@ func (i *Iterator) Next() interface{} {
 
 func (i *Iterator) Range() <-chan interface{} {
 	rangeChan := make(chan interface{})
-	i.done = make(chan bool)
+	done := make(chan bool)
+	i.done = done
 	go func() {
 		for {
 			next := i.Next()
@@ -71,7 +72,7 @@ func (i *Iterator) Range() <-chan interface{} {
 				return
 			}
 			select {
-			case <-i.done: // We clean up when we're done
+			case <-done: // We clean up when we're done
 				close(rangeChan)
 				return
 			case rangeChan <- next:
@@ -84,6 +85,7 @@ func (i *Iterator) Range() <-chan interface{} {
 func (i *Iterator) Close() error {
 	if done := i.done; done != nil {
 		close(i.done)
+		i.done = nil
 	}
 	return i.iter.Close()
 }
