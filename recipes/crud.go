@@ -13,6 +13,7 @@ import (
 	r "github.com/kristoiv/gocqltable/reflect"
 )
 
+// RangeInterface abstracts a query builder.
 type RangeInterface interface {
 	LessThan(rangeKey string, value interface{}) RangeInterface
 	LessThanOrEqual(rangeKey string, value interface{}) RangeInterface
@@ -26,14 +27,19 @@ type RangeInterface interface {
 	Fetch() (interface{}, error)
 }
 
+// CRUD forms the basis for table peer classes implementing the logic for row-based operations.
+// You may embed this struct into your own and selectively override certain functions,
+// thereby centralizing common behaviors and/or abstractions (think soft delete, timestamps etc.).
 type CRUD struct {
 	gocqltable.TableInterface
 }
 
+// Insert upserts an entity into a table.
 func (t CRUD) Insert(row interface{}) error {
 	return t.insert(row, nil)
 }
 
+// InsertWithTTL upserts an entity into a table using a TTL.
 func (t CRUD) InsertWithTTL(row interface{}, ttl *time.Time) error {
 	return t.insert(row, ttl)
 }
