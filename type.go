@@ -7,11 +7,23 @@ import (
 	"time"
 
 	"github.com/gocql/gocql"
+	r "github.com/kristoiv/gocqltable/reflect"
 )
 
 type Counter int
 
-func stringTypeOf(i interface{}) (string, error) {
+func stringTypeOf(i interface{}, fi *r.FieldInfo) (string, error) {
+	if fi != nil {
+		switch fi.Type {
+		case "set":
+			elemVal := reflect.Indirect(reflect.New(reflect.TypeOf(i).Elem())).Interface()
+			ct := cassaType(elemVal)
+			if ct == gocql.TypeCustom {
+				return "", fmt.Errorf("Unsupported type %T", i)
+			}
+			return fmt.Sprintf("set<%v>", ct), nil
+		}
+	}
 	_, isByteSlice := i.([]byte)
 	if !isByteSlice {
 		// Check if we found a higher kinded type

@@ -1,9 +1,10 @@
 package reflect
 
 import (
-	"github.com/gocql/gocql"
-
+	"reflect"
 	"testing"
+
+	"github.com/gocql/gocql"
 )
 
 type Tweet struct {
@@ -11,6 +12,18 @@ type Tweet struct {
 	ID            gocql.UUID  `cql:"id"`
 	Text          string      `teXt`
 	OriginalTweet *gocql.UUID `json:"origin"`
+	TestSet       []string    `cql:"test_set" cql_type:"set"`
+}
+
+func TestGetStructInfoForCQLType(t *testing.T) {
+	e := &Tweet{}
+	i := getStructInfo(reflect.ValueOf(e))
+	if i.FieldsMap["id"].Type != "" {
+		t.Error("Field id should have no type set")
+	}
+	if i.FieldsMap["test_set"].Type != "set" {
+		t.Error("Field test_set should have type set to 'set'")
+	}
 }
 
 func TestStructToMap(t *testing.T) {
@@ -20,7 +33,7 @@ func TestStructToMap(t *testing.T) {
 		t.Error("map is not nil when val is a string")
 	}
 	if ok {
-		t.Error("ok result from StructToMap when the val is a string")
+		t.Error("ok result from StructToMap when the value is a string")
 
 	}
 
@@ -29,6 +42,7 @@ func TestStructToMap(t *testing.T) {
 		gocql.TimeUUID(),
 		"hello gocassa",
 		nil,
+		[]string{"test"},
 	}
 
 	m, ok = StructToMap(tweet)
@@ -48,6 +62,10 @@ func TestStructToMap(t *testing.T) {
 	}
 	if m["OriginalTweet"] != tweet.OriginalTweet {
 		t.Errorf("Expected %v but got %s", tweet.OriginalTweet, m["OriginalTweet"])
+	}
+	_, ok = m["test_set"].([]string)
+	if !ok {
+		t.Errorf("Expected %v but got %s", tweet.TestSet, m["test_set"])
 	}
 
 	id := gocql.TimeUUID()
@@ -135,13 +153,13 @@ func TestFieldsAndValues(t *testing.T) {
 	}{
 		{
 			Tweet{},
-			[]string{"Timeline", "id", "teXt", "OriginalTweet"},
-			[]interface{}{"", emptyUUID, "", nilID},
+			[]string{"Timeline", "id", "teXt", "OriginalTweet", "test_set"},
+			[]interface{}{"", emptyUUID, "", nilID, []string{}},
 		},
 		{
-			Tweet{"timeline1", id, "hello gocassa", &id},
-			[]string{"Timeline", "id", "teXt", "OriginalTweet"},
-			[]interface{}{"timeline1", id, "hello gocassa", &id},
+			Tweet{"timeline1", id, "hello gocassa", &id, []string{"test1", "test2"}},
+			[]string{"Timeline", "id", "teXt", "OriginalTweet", "test_set"},
+			[]interface{}{"timeline1", id, "hello gocassa", &id, []string{"test1", "test2"}},
 		},
 	}
 	for _, test := range tests {
@@ -171,9 +189,23 @@ func assertValuesEqual(t *testing.T, a, b []interface{}) {
 	}
 
 	for i := range a {
-		if a[i] != b[i] {
-			t.Errorf("expected values %v but got %v a[i] = %v and b[i] = %v", a, b, a[i], b[i])
-			return
+		switch reflect.ValueOf(a[i]).Kind() {
+		case reflect.Slice:
+			s1 := reflect.ValueOf(a[i])
+			s2 := reflect.ValueOf(b[i])
+			for j := 0; j < s1.Len(); j++ {
+				if s1.Index(j).Interface() != s2.Index(j).Interface() {
+					t.Errorf("expected values %v but got %v a[i][j] = %v and b[i][j] = %v",
+						a[i], b[i], s1.Index(j).Interface(), s2.Index(j).Interface(),
+					)
+					return
+				}
+			}
+		default:
+			if a[i] != b[i] {
+				t.Errorf("expected values %v but got %v a[i] = %v and b[i] = %v", a, b, a[i], b[i])
+				return
+			}
 		}
 	}
 }

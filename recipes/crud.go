@@ -1,12 +1,11 @@
 package recipes
 
 import (
-	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"strings"
-	"reflect"
 	"time"
 
 	"github.com/kristoiv/gocqltable"
@@ -14,12 +13,14 @@ import (
 	r "github.com/kristoiv/gocqltable/reflect"
 )
 
+// RangeInterface abstracts a query builder.
 type RangeInterface interface {
 	LessThan(rangeKey string, value interface{}) RangeInterface
 	LessThanOrEqual(rangeKey string, value interface{}) RangeInterface
 	MoreThan(rangeKey string, value interface{}) RangeInterface
 	MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface
 	EqualTo(rangeKey string, value interface{}) RangeInterface
+	Contains(rangeKey string, value interface{}, queryKey bool) RangeInterface
 	OrderBy(fieldAndDirection string) RangeInterface
 	Limit(l int) RangeInterface
 	Select(s []string) RangeInterface
@@ -27,20 +28,24 @@ type RangeInterface interface {
 	Fetch() (interface{}, error)
 }
 
+// CRUD forms the basis for table peer classes implementing the logic for row-based operations.
+// You may embed this struct into your own and selectively override certain functions,
+// thereby centralizing common behaviors and/or abstractions (think soft delete, timestamps etc.).
 type CRUD struct {
 	gocqltable.TableInterface
 }
 
+// Insert upserts an entity into a table.
 func (t CRUD) Insert(row interface{}) error {
 	return t.insert(row, nil)
 }
 
+// InsertWithTTL upserts an entity into a table using a TTL.
 func (t CRUD) InsertWithTTL(row interface{}, ttl *time.Time) error {
 	return t.insert(row, ttl)
 }
 
 func (t CRUD) insert(row interface{}, ttl *time.Time) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -63,7 +68,7 @@ func (t CRUD) insert(row interface{}, ttl *time.Time) error {
 		for _, rowKey := range append(rowKeys, rangeKeys...) {
 			if strings.ToLower(key) == strings.ToLower(rowKey) {
 				if value == nil {
-					return errors.New(fmt.Sprintf("Inserting row failed due to missing key value (for key %q)", rowKey))
+					return fmt.Errorf("Inserting row failed due to missing key value (for key %q)", rowKey)
 				}
 				break
 			}
@@ -89,16 +94,14 @@ func (t CRUD) insert(row interface{}, ttl *time.Time) error {
 	}
 
 	return nil
-
 }
 
 func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return nil, errors.New(fmt.Sprintf("To few key-values to query for row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return nil, fmt.Errorf("To few key-values to query for row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	where := []string{}
@@ -112,7 +115,6 @@ func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
 	}
 
 	return row, nil
-
 }
 
 func (t CRUD) List(ids ...interface{}) (interface{}, error) {
@@ -120,7 +122,6 @@ func (t CRUD) List(ids ...interface{}) (interface{}, error) {
 }
 
 func (t CRUD) Update(row interface{}) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -162,19 +163,18 @@ func (t CRUD) Update(row interface{}) error {
 	}
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return errors.New(fmt.Sprintf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return fmt.Errorf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	err := t.Query(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")), append(vals, ids...)...).Exec()
 	if err != nil {
 		return err
 	}
-	return nil
 
+	return nil
 }
 
 func (t CRUD) Delete(row interface{}) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -199,7 +199,7 @@ func (t CRUD) Delete(row interface{}) error {
 	}
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return errors.New(fmt.Sprintf("To few key-values to delete row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return fmt.Errorf("To few key-values to delete row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	err := t.Query(fmt.Sprintf(`DELETE FROM %q.%q WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(where, " AND ")), ids...).Exec()
@@ -207,7 +207,6 @@ func (t CRUD) Delete(row interface{}) error {
 		return err
 	}
 	return nil
-
 }
 
 func (t CRUD) Range(ids ...interface{}) RangeInterface {
@@ -272,6 +271,18 @@ func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) RangeInterfac
 
 func (r Range) EqualTo(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" = ?")
+	r.whereVals = append(r.whereVals, value)
+	return r
+}
+
+// Contains can be used to query indexed map/set/list columns.
+// Pass true as the last argument in order to query for a key-indexed map.
+func (r Range) Contains(rangeKey string, value interface{}, queryKey bool) RangeInterface {
+	if queryKey {
+		r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" CONTAINS KEY ?")
+	} else {
+		r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" CONTAINS ?")
+	}
 	r.whereVals = append(r.whereVals, value)
 	return r
 }
@@ -361,5 +372,4 @@ func (r Range) Fetch() (interface{}, error) {
 	}
 
 	return result.Interface(), nil
-
 }

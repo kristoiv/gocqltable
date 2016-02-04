@@ -1,4 +1,4 @@
-// This package provides some punk-rock reflection which is not in the stdlib.
+// Package reflect provides some punk-rock reflection which is not in the stdlib.
 package reflect
 
 import (
@@ -75,36 +75,64 @@ func FieldsAndValues(val interface{}) ([]string, []interface{}, bool) {
 	return fields, values, true
 }
 
-var structMapMutex sync.RWMutex
-var structMap = make(map[r.Type]*structInfo)
+type typeMap struct {
+	m sync.RWMutex
 
-type fieldInfo struct {
-	Key string
-	Num int
+	types map[r.Type]*StructInfo
 }
 
-type structInfo struct {
+// Get returns information of a mapped struct if it has been processed by gocqltable.
+func (t *typeMap) Get(i interface{}) (*StructInfo, bool) {
+	var rt r.Type
+	switch v := i.(type) {
+	case r.Type:
+		rt = v
+	default:
+		rt = r.Indirect(r.ValueOf(i)).Type()
+	}
+	t.m.Lock()
+	s, found := t.types[rt]
+	t.m.Unlock()
+	return s, found
+}
+
+func (t *typeMap) set(rt r.Type, v *StructInfo) {
+	t.m.Lock()
+	t.types[rt] = v
+	t.m.Unlock()
+}
+
+// TypeMap holds all the type's structure information.
+var TypeMap = &typeMap{types: make(map[r.Type]*StructInfo)}
+
+// FieldInfo holds information about a struct field.
+type FieldInfo struct {
+	Key  string
+	Num  int
+	Type string
+}
+
+// StructInfo contains information about a struct's fields.
+type StructInfo struct {
 	// FieldsMap is used to access fields by their key
-	FieldsMap map[string]fieldInfo
+	FieldsMap map[string]*FieldInfo
 	// FieldsList allows iteration over the fields in their struct order.
-	FieldsList []fieldInfo
+	FieldsList []*FieldInfo
 }
 
-func getStructInfo(v r.Value) *structInfo {
+func getStructInfo(v r.Value) *StructInfo {
 	st := r.Indirect(v).Type()
-	structMapMutex.RLock()
-	sinfo, found := structMap[st]
-	structMapMutex.RUnlock()
+	sinfo, found := TypeMap.Get(st)
 	if found {
 		return sinfo
 	}
 
 	n := st.NumField()
-	fieldsMap := make(map[string]fieldInfo, n)
-	fieldsList := make([]fieldInfo, 0, n)
+	fieldsMap := make(map[string]*FieldInfo, n)
+	fieldsList := make([]*FieldInfo, 0, n)
 	for i := 0; i != n; i++ {
 		field := st.Field(i)
-		info := fieldInfo{Num: i}
+		info := &FieldInfo{Num: i}
 		tag := field.Tag.Get("cql")
 		// If there is no cql specific tag and there are no other tags
 		// set the cql tag to the whole field tag
@@ -122,15 +150,15 @@ func getStructInfo(v r.Value) *structInfo {
 			panic(msg)
 		}
 
+		typeTag := field.Tag.Get("cql_type")
+		if typeTag != "" {
+			info.Type = typeTag
+		}
+
 		fieldsList = append(fieldsList, info)
 		fieldsMap[info.Key] = info
 	}
-	sinfo = &structInfo{
-		fieldsMap,
-		fieldsList,
-	}
-	structMapMutex.Lock()
-	structMap[st] = sinfo
-	structMapMutex.Unlock()
+	sinfo = &StructInfo{fieldsMap, fieldsList}
+	TypeMap.set(st, sinfo)
 	return sinfo
 }
