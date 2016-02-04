@@ -58,10 +58,10 @@ func (t Table) create(props ...string) error {
 	if !ok {
 		panic("Unable to get map from struct during create table")
 	}
-
+	si, _ := r.TypeMap.Get(t.Row())
 	for key, value := range m {
 		key = strings.ToLower(key)
-		typ, err := stringTypeOf(value)
+		typ, err := stringTypeOf(value, si.FieldsMap[key])
 		if err != nil {
 			return err
 		}
