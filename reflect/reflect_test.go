@@ -1,9 +1,9 @@
 package reflect
 
 import (
-	"github.com/gocql/gocql"
-
 	"testing"
+
+	"github.com/gocql/gocql"
 )
 
 type Tweet struct {

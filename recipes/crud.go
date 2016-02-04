@@ -1,12 +1,11 @@
 package recipes
 
 import (
-	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"strings"
-	"reflect"
 	"time"
 
 	"github.com/kristoiv/gocqltable"
@@ -40,7 +39,6 @@ func (t CRUD) InsertWithTTL(row interface{}, ttl *time.Time) error {
 }
 
 func (t CRUD) insert(row interface{}, ttl *time.Time) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -63,7 +61,7 @@ func (t CRUD) insert(row interface{}, ttl *time.Time) error {
 		for _, rowKey := range append(rowKeys, rangeKeys...) {
 			if strings.ToLower(key) == strings.ToLower(rowKey) {
 				if value == nil {
-					return errors.New(fmt.Sprintf("Inserting row failed due to missing key value (for key %q)", rowKey))
+					return fmt.Errorf("Inserting row failed due to missing key value (for key %q)", rowKey)
 				}
 				break
 			}
@@ -89,16 +87,14 @@ func (t CRUD) insert(row interface{}, ttl *time.Time) error {
 	}
 
 	return nil
-
 }
 
 func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return nil, errors.New(fmt.Sprintf("To few key-values to query for row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return nil, fmt.Errorf("To few key-values to query for row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	where := []string{}
@@ -112,7 +108,6 @@ func (t CRUD) Get(ids ...interface{}) (interface{}, error) {
 	}
 
 	return row, nil
-
 }
 
 func (t CRUD) List(ids ...interface{}) (interface{}, error) {
@@ -120,7 +115,6 @@ func (t CRUD) List(ids ...interface{}) (interface{}, error) {
 }
 
 func (t CRUD) Update(row interface{}) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -162,19 +156,18 @@ func (t CRUD) Update(row interface{}) error {
 	}
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return errors.New(fmt.Sprintf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return fmt.Errorf("To few key-values to update row (%d of the required minimum of %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	err := t.Query(fmt.Sprintf(`UPDATE %q.%q SET %s WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(set, ", "), strings.Join(where, " AND ")), append(vals, ids...)...).Exec()
 	if err != nil {
 		return err
 	}
-	return nil
 
+	return nil
 }
 
 func (t CRUD) Delete(row interface{}) error {
-
 	rowKeys := t.RowKeys()
 	rangeKeys := t.RangeKeys()
 
@@ -199,7 +192,7 @@ func (t CRUD) Delete(row interface{}) error {
 	}
 
 	if len(ids) < len(rowKeys)+len(rangeKeys) {
-		return errors.New(fmt.Sprintf("To few key-values to delete row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys)))
+		return fmt.Errorf("To few key-values to delete row (%d of the required %d)", len(ids), len(rowKeys)+len(rangeKeys))
 	}
 
 	err := t.Query(fmt.Sprintf(`DELETE FROM %q.%q WHERE %s`, t.Keyspace().Name(), t.Name(), strings.Join(where, " AND ")), ids...).Exec()
@@ -207,7 +200,6 @@ func (t CRUD) Delete(row interface{}) error {
 		return err
 	}
 	return nil
-
 }
 
 func (t CRUD) Range(ids ...interface{}) RangeInterface {
@@ -361,5 +353,4 @@ func (r Range) Fetch() (interface{}, error) {
 	}
 
 	return result.Interface(), nil
-
 }

@@ -1,4 +1,4 @@
-// This package provides some punk-rock reflection which is not in the stdlib.
+// Package reflect provides some punk-rock reflection which is not in the stdlib.
 package reflect
 
 import (

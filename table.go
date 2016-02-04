@@ -39,7 +39,6 @@ func (t Table) CreateWithProperties(props ...string) error {
 }
 
 func (t Table) create(props ...string) error {
-
 	if t.session == nil {
 		t.session = defaultSession
 	}
