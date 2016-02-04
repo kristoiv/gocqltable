@@ -20,6 +20,7 @@ type RangeInterface interface {
 	MoreThan(rangeKey string, value interface{}) RangeInterface
 	MoreThanOrEqual(rangeKey string, value interface{}) RangeInterface
 	EqualTo(rangeKey string, value interface{}) RangeInterface
+	Contains(rangeKey string, value interface{}, queryKey bool) RangeInterface
 	OrderBy(fieldAndDirection string) RangeInterface
 	Limit(l int) RangeInterface
 	Select(s []string) RangeInterface
@@ -270,6 +271,18 @@ func (r Range) MoreThanOrEqual(rangeKey string, value interface{}) RangeInterfac
 
 func (r Range) EqualTo(rangeKey string, value interface{}) RangeInterface {
 	r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" = ?")
+	r.whereVals = append(r.whereVals, value)
+	return r
+}
+
+// Contains can be used to query indexed map/set/list columns.
+// Pass true as the last argument in order to query for a key-indexed map.
+func (r Range) Contains(rangeKey string, value interface{}, queryKey bool) RangeInterface {
+	if queryKey {
+		r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" CONTAINS KEY ?")
+	} else {
+		r.where = append(r.where, fmt.Sprintf("%q", strings.ToLower(rangeKey))+" CONTAINS ?")
+	}
 	r.whereVals = append(r.whereVals, value)
 	return r
 }
