@@ -23,7 +23,7 @@ type RangeInterface interface {
 	OrderBy(fieldAndDirection string) RangeInterface
 	Limit(l int) RangeInterface
 	Select(s []string) RangeInterface
-	WhereIn(m map[string][]string) RangeInterface
+	WhereIn(m map[string][]interface{}) RangeInterface
 	Fetch() (interface{}, error)
 }
 
@@ -234,7 +234,6 @@ type Range struct {
 	table gocqltable.TableInterface
 
 	selectCols []string
-	whereIn    map[string][]string
 	where      []string
 	whereVals  []interface{}
 	order      string
@@ -291,8 +290,23 @@ func (r Range) Select(s []string) RangeInterface {
 	return r
 }
 
-func (r Range) WhereIn(m map[string][]string) RangeInterface {
-	r.whereIn = m
+func (r Range) WhereIn(m map[string][]interface{}) RangeInterface {
+	for rangeKey, values := range m {
+		numValues := len(values)
+		if numValues == 0 {
+			continue
+		}
+		where := fmt.Sprintf("%q IN (", strings.ToLower(rangeKey))
+		for i, value := range values {
+			r.whereVals = append(r.whereVals, value)
+			if i < (numValues - 1) { // append "?, " for all but the last element
+				where = where + "?, "
+			} else {
+				where = where + "?)"
+			}
+		}
+		r.where = append(r.where, where)
+	}
 	return r
 }
 
@@ -303,30 +317,10 @@ func (r Range) Fetch() (interface{}, error) {
 	limit := r.limit
 	filtering := r.filtering
 	selectCols := r.selectCols
-	whereIn := r.whereIn
 
 	whereString := ""
-	if len(whereIn) > 0 {
-		numberOfInClauses := 0
-		for col, in := range whereIn {
-			if len(in) == 0 {
-				continue
-			}
-			if numberOfInClauses > 0 {
-				whereString = whereString + " AND"
-			}
-			whereString = fmt.Sprintf("%s %q IN (%v)", whereString, col, strings.Join(in, ", "))
-			numberOfInClauses++
-		}
-	}
 	if len(where) > 0 {
-		if len(whereString) > 0 {
-			whereString = whereString + " AND "
-		}
-		whereString = whereString + strings.Join(where, " AND ")
-	}
-	if len(whereString) > 0 {
-		whereString = "WHERE " + whereString
+		whereString = "WHERE " + strings.Join(where, " AND ")
 	}
 
 	orderString := ""
