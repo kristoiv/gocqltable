@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strconv"
 	"strings"
-	"reflect"
 	"time"
 
 	"github.com/kristoiv/gocqltable"
