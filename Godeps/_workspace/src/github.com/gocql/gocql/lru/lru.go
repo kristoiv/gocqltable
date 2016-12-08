@@ -1,4 +1,5 @@
 /*
+Copyright 2015 To gocql authors
 Copyright 2013 Google Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +21,10 @@ package lru
 import "container/list"
 
 // Cache is an LRU cache. It is not safe for concurrent access.
+//
+// This cache has been forked from github.com/golang/groupcache/lru, but
+// specialized with string keys to avoid the allocations caused by wrapping them
+// in interface{}.
 type Cache struct {
 	// MaxEntries is the maximum number of cache entries before
 	// an item is evicted. Zero means no limit.
@@ -27,17 +32,14 @@ type Cache struct {
 
 	// OnEvicted optionally specificies a callback function to be
 	// executed when an entry is purged from the cache.
-	OnEvicted func(key Key, value interface{})
+	OnEvicted func(key string, value interface{})
 
 	ll    *list.List
-	cache map[interface{}]*list.Element
+	cache map[string]*list.Element
 }
 
-// A Key may be any value that is comparable. See http://golang.org/ref/spec#Comparison_operators
-type Key interface{}
-
 type entry struct {
-	key   Key
+	key   string
 	value interface{}
 }
 
@@ -48,14 +50,14 @@ func New(maxEntries int) *Cache {
 	return &Cache{
 		MaxEntries: maxEntries,
 		ll:         list.New(),
-		cache:      make(map[interface{}]*list.Element),
+		cache:      make(map[string]*list.Element),
 	}
 }
 
 // Add adds a value to the cache.
-func (c *Cache) Add(key Key, value interface{}) {
+func (c *Cache) Add(key string, value interface{}) {
 	if c.cache == nil {
-		c.cache = make(map[interface{}]*list.Element)
+		c.cache = make(map[string]*list.Element)
 		c.ll = list.New()
 	}
 	if ee, ok := c.cache[key]; ok {
@@ -71,7 +73,7 @@ func (c *Cache) Add(key Key, value interface{}) {
 }
 
 // Get looks up a key's value from the cache.
-func (c *Cache) Get(key Key) (value interface{}, ok bool) {
+func (c *Cache) Get(key string) (value interface{}, ok bool) {
 	if c.cache == nil {
 		return
 	}
@@ -83,7 +85,7 @@ func (c *Cache) Get(key Key) (value interface{}, ok bool) {
 }
 
 // Remove removes the provided key from the cache.
-func (c *Cache) Remove(key Key) {
+func (c *Cache) Remove(key string) {
 	if c.cache == nil {
 		return
 	}

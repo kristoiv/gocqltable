@@ -36,6 +36,7 @@ type TableMetadata struct {
 	PartitionKey      []*ColumnMetadata
 	ClusteringColumns []*ColumnMetadata
 	Columns           map[string]*ColumnMetadata
+	OrderedColumns    []string
 }
 
 // schema metadata for a column
@@ -70,6 +71,7 @@ const (
 	PARTITION_KEY  = "partition_key"
 	CLUSTERING_KEY = "clustering_key"
 	REGULAR        = "regular"
+	COMPACT_VALUE  = "compact_value"
 )
 
 // default alias values
@@ -87,6 +89,8 @@ type schemaDescriber struct {
 	cache map[string]*KeyspaceMetadata
 }
 
+// creates a session bound schema describer which will query and cache
+// keyspace metadata
 func newSchemaDescriber(session *Session) *schemaDescriber {
 	return &schemaDescriber{
 		session: session,
@@ -94,6 +98,8 @@ func newSchemaDescriber(session *Session) *schemaDescriber {
 	}
 }
 
+// returns the cached KeyspaceMetadata held by the describer for the named
+// keyspace.
 func (s *schemaDescriber) getSchema(keyspaceName string) (*KeyspaceMetadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,6 +120,8 @@ func (s *schemaDescriber) getSchema(keyspaceName string) (*KeyspaceMetadata, err
 	return metadata, nil
 }
 
+// forcibly updates the current KeyspaceMetadata held by the schema describer
+// for a given named keyspace.
 func (s *schemaDescriber) refreshSchema(keyspaceName string) error {
 	var err error
 
@@ -141,9 +149,11 @@ func (s *schemaDescriber) refreshSchema(keyspaceName string) error {
 	return nil
 }
 
-// "compiles" keyspace, table, and column metadata for a keyspace together
-// linking the metadata objects together and calculating the partition key
-// and clustering key.
+// "compiles" derived information about keyspace, table, and column metadata
+// for a keyspace from the basic queried metadata objects returned by
+// getKeyspaceMetadata, getTableMetadata, and getColumnMetadata respectively;
+// Links the metadata objects together and derives the column composition of
+// the partition key and clustering key for a table.
 func compileMetadata(
 	protoVersion int,
 	keyspace *KeyspaceMetadata,
@@ -169,6 +179,7 @@ func compileMetadata(
 
 		table := keyspace.Tables[columns[i].Table]
 		table.Columns[columns[i].Name] = &columns[i]
+		table.OrderedColumns = append(table.OrderedColumns, columns[i].Name)
 	}
 
 	if protoVersion == 1 {
@@ -178,8 +189,11 @@ func compileMetadata(
 	}
 }
 
-// V1 protocol does not return as much column metadata as V2+ so determining
-// PartitionKey and ClusterColumns is more complex
+// Compiles derived information from TableMetadata which have had
+// ColumnMetadata added already. V1 protocol does not return as much
+// column metadata as V2+ (because V1 doesn't support the "type" column in the
+// system.schema_columns table) so determining PartitionKey and ClusterColumns
+// is more complex.
 func compileV1Metadata(tables []TableMetadata) {
 	for i := range tables {
 		table := &tables[i]
@@ -291,13 +305,14 @@ func compileV2Metadata(tables []TableMetadata) {
 	for i := range tables {
 		table := &tables[i]
 
-		partitionColumnCount := countColumnsOfKind(table.Columns, PARTITION_KEY)
-		table.PartitionKey = make([]*ColumnMetadata, partitionColumnCount)
+		keyValidatorParsed := parseType(table.KeyValidator)
+		table.PartitionKey = make([]*ColumnMetadata, len(keyValidatorParsed.types))
 
-		clusteringColumnCount := countColumnsOfKind(table.Columns, CLUSTERING_KEY)
+		clusteringColumnCount := componentColumnCountOfType(table.Columns, CLUSTERING_KEY)
 		table.ClusteringColumns = make([]*ColumnMetadata, clusteringColumnCount)
 
-		for _, column := range table.Columns {
+		for _, columnName := range table.OrderedColumns {
+			column := table.Columns[columnName]
 			if column.Kind == PARTITION_KEY {
 				table.PartitionKey[column.ComponentIndex] = column
 			} else if column.Kind == CLUSTERING_KEY {
@@ -308,17 +323,18 @@ func compileV2Metadata(tables []TableMetadata) {
 	}
 }
 
-func countColumnsOfKind(columns map[string]*ColumnMetadata, kind string) int {
-	count := 0
+// returns the count of coluns with the given "kind" value.
+func componentColumnCountOfType(columns map[string]*ColumnMetadata, kind string) int {
+	maxComponentIndex := -1
 	for _, column := range columns {
-		if column.Kind == kind {
-			count++
+		if column.Kind == kind && column.ComponentIndex > maxComponentIndex {
+			maxComponentIndex = column.ComponentIndex
 		}
 	}
-	return count
+	return maxComponentIndex + 1
 }
 
-// query only for the keyspace metadata for the specified keyspace
+// query only for the keyspace metadata for the specified keyspace from system.schema_keyspace
 func getKeyspaceMetadata(
 	session *Session,
 	keyspaceName string,
@@ -358,13 +374,21 @@ func getKeyspaceMetadata(
 	return keyspace, nil
 }
 
-// query for only the table metadata in the specified keyspace
-func getTableMetadata(
-	session *Session,
-	keyspaceName string,
-) ([]TableMetadata, error) {
-	query := session.Query(
-		`
+// query for only the table metadata in the specified keyspace from system.schema_columnfamilies
+func getTableMetadata(session *Session, keyspaceName string) ([]TableMetadata, error) {
+
+	var (
+		scan func(iter *Iter, table *TableMetadata) bool
+		stmt string
+
+		keyAliasesJSON    []byte
+		columnAliasesJSON []byte
+	)
+
+	if session.cfg.ProtoVersion < protoVersion4 {
+		// we have key aliases
+		// TODO: Do we need key_aliases?
+		stmt = `
 		SELECT
 			columnfamily_name,
 			key_validator,
@@ -374,29 +398,49 @@ func getTableMetadata(
 			column_aliases,
 			value_alias
 		FROM system.schema_columnfamilies
-		WHERE keyspace_name = ?
-		`,
-		keyspaceName,
-	)
+		WHERE keyspace_name = ?`
+
+		scan = func(iter *Iter, table *TableMetadata) bool {
+			return iter.Scan(
+				&table.Name,
+				&table.KeyValidator,
+				&table.Comparator,
+				&table.DefaultValidator,
+				&keyAliasesJSON,
+				&columnAliasesJSON,
+				&table.ValueAlias,
+			)
+		}
+	} else {
+		stmt = `
+		SELECT
+			columnfamily_name,
+			key_validator,
+			comparator,
+			default_validator
+		FROM system.schema_columnfamilies
+		WHERE keyspace_name = ?`
+
+		scan = func(iter *Iter, table *TableMetadata) bool {
+			return iter.Scan(
+				&table.Name,
+				&table.KeyValidator,
+				&table.Comparator,
+				&table.DefaultValidator,
+			)
+		}
+	}
+
 	// Set a routing key to avoid GetRoutingKey from computing the routing key
 	// TODO use a separate connection (pool) for system keyspace queries.
+	query := session.Query(stmt, keyspaceName)
 	query.RoutingKey([]byte{})
 	iter := query.Iter()
 
 	tables := []TableMetadata{}
 	table := TableMetadata{Keyspace: keyspaceName}
 
-	var keyAliasesJSON []byte
-	var columnAliasesJSON []byte
-	for iter.Scan(
-		&table.Name,
-		&table.KeyValidator,
-		&table.Comparator,
-		&table.DefaultValidator,
-		&keyAliasesJSON,
-		&columnAliasesJSON,
-		&table.ValueAlias,
-	) {
+	for scan(iter, &table) {
 		var err error
 
 		// decode the key aliases
@@ -437,7 +481,7 @@ func getTableMetadata(
 	return tables, nil
 }
 
-// query for only the table metadata in the specified keyspace
+// query for only the column metadata in the specified keyspace from system.schema_columns
 func getColumnMetadata(
 	session *Session,
 	keyspaceName string,

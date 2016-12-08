@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unsafe"
 )
 
 // a token partitioner
 type partitioner interface {
+	Name() string
 	Hash([]byte) token
 	ParseString(string) token
 }
@@ -31,144 +31,16 @@ type token interface {
 type murmur3Partitioner struct{}
 type murmur3Token int64
 
+func (p murmur3Partitioner) Name() string {
+	return "Murmur3Partitioner"
+}
+
 func (p murmur3Partitioner) Hash(partitionKey []byte) token {
 	h1 := murmur3H1(partitionKey)
 	return murmur3Token(int64(h1))
 }
 
 // murmur3 little-endian, 128-bit hash, but returns only h1
-func murmur3H1(data []byte) uint64 {
-	length := len(data)
-
-	var h1, h2, k1, k2 uint64
-
-	const (
-		c1 = 0x87c37b91114253d5
-		c2 = 0x4cf5ad432745937f
-	)
-
-	// body
-	nBlocks := length / 16
-	for i := 0; i < nBlocks; i++ {
-		block := (*[2]uint64)(unsafe.Pointer(&data[i*16]))
-
-		k1 = block[0]
-		k2 = block[1]
-
-		k1 *= c1
-		k1 = (k1 << 31) | (k1 >> 33) // ROTL64(k1, 31)
-		k1 *= c2
-		h1 ^= k1
-
-		h1 = (h1 << 27) | (h1 >> 37) // ROTL64(h1, 27)
-		h1 += h2
-		h1 = h1*5 + 0x52dce729
-
-		k2 *= c2
-		k2 = (k2 << 33) | (k2 >> 31) // ROTL64(k2, 33)
-		k2 *= c1
-		h2 ^= k2
-
-		h2 = (h2 << 31) | (h2 >> 33) // ROTL64(h2, 31)
-		h2 += h1
-		h2 = h2*5 + 0x38495ab5
-	}
-
-	// tail
-	tail := data[nBlocks*16:]
-	k1 = 0
-	k2 = 0
-	switch length & 15 {
-	case 15:
-		k2 ^= uint64(tail[14]) << 48
-		fallthrough
-	case 14:
-		k2 ^= uint64(tail[13]) << 40
-		fallthrough
-	case 13:
-		k2 ^= uint64(tail[12]) << 32
-		fallthrough
-	case 12:
-		k2 ^= uint64(tail[11]) << 24
-		fallthrough
-	case 11:
-		k2 ^= uint64(tail[10]) << 16
-		fallthrough
-	case 10:
-		k2 ^= uint64(tail[9]) << 8
-		fallthrough
-	case 9:
-		k2 ^= uint64(tail[8])
-
-		k2 *= c2
-		k2 = (k2 << 33) | (k2 >> 31) // ROTL64(k2, 33)
-		k2 *= c1
-		h2 ^= k2
-
-		fallthrough
-	case 8:
-		k1 ^= uint64(tail[7]) << 56
-		fallthrough
-	case 7:
-		k1 ^= uint64(tail[6]) << 48
-		fallthrough
-	case 6:
-		k1 ^= uint64(tail[5]) << 40
-		fallthrough
-	case 5:
-		k1 ^= uint64(tail[4]) << 32
-		fallthrough
-	case 4:
-		k1 ^= uint64(tail[3]) << 24
-		fallthrough
-	case 3:
-		k1 ^= uint64(tail[2]) << 16
-		fallthrough
-	case 2:
-		k1 ^= uint64(tail[1]) << 8
-		fallthrough
-	case 1:
-		k1 ^= uint64(tail[0])
-
-		k1 *= c1
-		k1 = (k1 << 31) | (k1 >> 33) // ROTL64(k1, 31)
-		k1 *= c2
-		h1 ^= k1
-	}
-
-	h1 ^= uint64(length)
-	h2 ^= uint64(length)
-
-	h1 += h2
-	h2 += h1
-
-	// finalizer
-	const (
-		fmix1 = 0xff51afd7ed558ccd
-		fmix2 = 0xc4ceb9fe1a85ec53
-	)
-
-	// fmix64(h1)
-	h1 ^= h1 >> 33
-	h1 *= fmix1
-	h1 ^= h1 >> 33
-	h1 *= fmix2
-	h1 ^= h1 >> 33
-
-	// fmix64(h2)
-	h2 ^= h2 >> 33
-	h2 *= fmix1
-	h2 ^= h2 >> 33
-	h2 *= fmix2
-	h2 ^= h2 >> 33
-
-	h1 += h2
-	// the following is extraneous since h2 is discarded
-	// h2 += h1
-
-	return h1
-}
-
 func (p murmur3Partitioner) ParseString(str string) token {
 	val, _ := strconv.ParseInt(str, 10, 64)
 	return murmur3Token(val)
@@ -183,29 +55,37 @@ func (m murmur3Token) Less(token token) bool {
 }
 
 // order preserving partitioner and token
-type orderPreservingPartitioner struct{}
-type orderPreservingToken []byte
+type orderedPartitioner struct{}
+type orderedToken []byte
 
-func (p orderPreservingPartitioner) Hash(partitionKey []byte) token {
+func (p orderedPartitioner) Name() string {
+	return "OrderedPartitioner"
+}
+
+func (p orderedPartitioner) Hash(partitionKey []byte) token {
 	// the partition key is the token
-	return orderPreservingToken(partitionKey)
+	return orderedToken(partitionKey)
 }
 
-func (p orderPreservingPartitioner) ParseString(str string) token {
-	return orderPreservingToken([]byte(str))
+func (p orderedPartitioner) ParseString(str string) token {
+	return orderedToken([]byte(str))
 }
 
-func (o orderPreservingToken) String() string {
+func (o orderedToken) String() string {
 	return string([]byte(o))
 }
 
-func (o orderPreservingToken) Less(token token) bool {
-	return -1 == bytes.Compare(o, token.(orderPreservingToken))
+func (o orderedToken) Less(token token) bool {
+	return -1 == bytes.Compare(o, token.(orderedToken))
 }
 
 // random partitioner and token
 type randomPartitioner struct{}
 type randomToken big.Int
+
+func (r randomPartitioner) Name() string {
+	return "RandomPartitioner"
+}
 
 func (p randomPartitioner) Hash(partitionKey []byte) token {
 	hash := md5.New()
@@ -239,7 +119,7 @@ type tokenRing struct {
 	hosts       []*HostInfo
 }
 
-func newTokenRing(partitioner string, hosts []*HostInfo) (*tokenRing, error) {
+func newTokenRing(partitioner string, hosts []HostInfo) (*tokenRing, error) {
 	tokenRing := &tokenRing{
 		tokens: []token{},
 		hosts:  []*HostInfo{},
@@ -248,14 +128,15 @@ func newTokenRing(partitioner string, hosts []*HostInfo) (*tokenRing, error) {
 	if strings.HasSuffix(partitioner, "Murmur3Partitioner") {
 		tokenRing.partitioner = murmur3Partitioner{}
 	} else if strings.HasSuffix(partitioner, "OrderedPartitioner") {
-		tokenRing.partitioner = orderPreservingPartitioner{}
+		tokenRing.partitioner = orderedPartitioner{}
 	} else if strings.HasSuffix(partitioner, "RandomPartitioner") {
 		tokenRing.partitioner = randomPartitioner{}
 	} else {
 		return nil, fmt.Errorf("Unsupported partitioner '%s'", partitioner)
 	}
 
-	for _, host := range hosts {
+	for i := range hosts {
+		host := &hosts[i]
 		for _, strToken := range host.Tokens {
 			token := tokenRing.partitioner.ParseString(strToken)
 			tokenRing.tokens = append(tokenRing.tokens, token)
@@ -282,8 +163,13 @@ func (t *tokenRing) Swap(i, j int) {
 }
 
 func (t *tokenRing) String() string {
+
 	buf := &bytes.Buffer{}
-	buf.WriteString("TokenRing={")
+	buf.WriteString("TokenRing(")
+	if t.partitioner != nil {
+		buf.WriteString(t.partitioner.Name())
+	}
+	buf.WriteString("){")
 	sep := ""
 	for i := range t.tokens {
 		buf.WriteString(sep)
@@ -300,12 +186,20 @@ func (t *tokenRing) String() string {
 }
 
 func (t *tokenRing) GetHostForPartitionKey(partitionKey []byte) *HostInfo {
+	if t == nil {
+		return nil
+	}
+
 	token := t.partitioner.Hash(partitionKey)
 	return t.GetHostForToken(token)
 }
 
 func (t *tokenRing) GetHostForToken(token token) *HostInfo {
-	// find the primary repica
+	if t == nil {
+		return nil
+	}
+
+	// find the primary replica
 	ringIndex := sort.Search(
 		len(t.tokens),
 		func(i int) bool {
