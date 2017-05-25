@@ -46,8 +46,8 @@ func MapToStruct(m map[string]interface{}, struc interface{}) error {
 	for k, v := range m {
 		if info, ok := sinfo.FieldsMap[k]; ok {
 			structField := val.Field(info.Num)
-			if structField.Type().Name() == r.TypeOf(v).Name() {
-				structField.Set(r.ValueOf(v))
+			if structField.Type().Kind() == r.TypeOf(v).Kind() {
+				structField.Set(r.ValueOf(v).Convert(structField.Type()))
 			}
 		}
 	}
